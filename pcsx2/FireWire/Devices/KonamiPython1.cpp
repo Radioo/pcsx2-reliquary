@@ -1358,6 +1358,19 @@ namespace
 		return result;
 	}
 
+	void RunPopnReaderCardReset()
+	{
+		if (s_popn_reader.card_inside)
+			Host::AddKeyedOSDMessage("Python1PopnCard", "Card returned by the reader.", 3.0f);
+
+		s_popn_reader.shutter_open = false;
+		s_popn_reader.card_inside = false;
+		s_popn_reader.read_ready = false;
+		s_popn_reader.write_buffer_loaded = false;
+		s_popn_reader.write_buffer.fill(0);
+		Console.WriteLn("POPN READER: card reset, %s", DescribePopnReaderState().c_str());
+	}
+
 	void HandlePopnReaderDeviceCommand(const std::vector<u8>& bytes)
 	{
 		const u8 node = bytes[2];
@@ -1371,8 +1384,11 @@ namespace
 		{
 			case 0x00:
 			case 0x01:
-			case 0x10:
 			case 0x11:
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+			case 0x10:
+				RunPopnReaderCardReset();
 				QueuePopnReaderByteReply(node, command, 0x00);
 				break;
 			case 0x12:
