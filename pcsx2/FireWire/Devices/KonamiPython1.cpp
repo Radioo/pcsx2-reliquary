@@ -31,6 +31,7 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -57,6 +58,7 @@ namespace
 	constexpr u32 UART_RX_QUEUE_LIMIT = 0x400;
 	constexpr u32 UART_CALLBACK_BYTE_LIMIT = 38;
 	constexpr u64 KONAMI_STORAGE_READ_BYTES_PER_SECOND = 24ull * 1024 * 1024;
+	constexpr u64 KONAMI_NET_POLLS_PER_SECOND = 4000;
 	constexpr u32 KONAMI_ADPCM_HEADER_SIZE = 0x10;
 	constexpr u32 KONAMI_ADPCM_MAX_ENCODED_BYTES = 32 * 1024 * 1024;
 	constexpr u32 KONAMI_ADPCM_INPUT_SAMPLE_RATE = 22050;
@@ -570,6 +572,7 @@ namespace
 	std::array<u8, 4> s_net_server_address = {};
 	u16 s_net_server_port = 80;
 	bool s_net_server_address_valid = false;
+	std::future<std::optional<std::array<u8, 4>>> s_net_resolve_future;
 
 #ifdef _WIN32
 	using NetSocket = SOCKET;
@@ -587,6 +590,36 @@ namespace
 	};
 
 	Python1NetSocket s_net_sockets[KONAMI_NET_CHANNEL_COUNT];
+
+	enum class Python1NetPendingKind : u8
+	{
+		None,
+		Connect,
+		Send,
+		Receive,
+	};
+
+	struct Python1NetPendingOperation
+	{
+		Python1NetPendingKind kind = Python1NetPendingKind::None;
+		u32 address = 0;
+		u32 byte_count = 0;
+		std::vector<u8> send_buffer;
+		u32 send_offset = 0;
+		u64 timeout_cycle = 0;
+	};
+
+	Python1NetPendingOperation s_net_pending_operations[KONAMI_NET_CHANNEL_COUNT];
+
+	bool HasPendingNetOperation()
+	{
+		for (const Python1NetPendingOperation& pending : s_net_pending_operations)
+		{
+			if (pending.kind != Python1NetPendingKind::None)
+				return true;
+		}
+		return false;
+	}
 	std::string s_popn_pcb_id_prefix;
 	bool s_popn_pcb_id_prefix_patched = false;
 	u32 s_popn_net_state = 0xffffffff;
@@ -2853,20 +2886,28 @@ namespace
 		return base_cycles + std::max<u64>(1, transfer_cycles);
 	}
 
-	void SchedulePendingSectorStatusEvent()
+	void ScheduleDeviceEvent()
 	{
 		if (!s_host)
 			return;
 
+		const u64 net_poll_delta = std::max<u64>(1, PSXCLK / KONAMI_NET_POLLS_PER_SECOND);
+		const bool poll_net = HasPendingNetOperation();
+
 		if (s_pending_sector_status_writes.empty())
 		{
-			s_host->ClearEvent();
+			if (poll_net)
+				s_host->ScheduleEvent(net_poll_delta);
+			else
+				s_host->ClearEvent();
 			return;
 		}
 
 		const u64 ready_cycle = s_pending_sector_status_writes.front().ready_cycle;
 		const u64 current_cycle = GetCurrentCycle();
-		const u64 delta = ready_cycle > current_cycle ? ready_cycle - current_cycle : 1;
+		u64 delta = ready_cycle > current_cycle ? ready_cycle - current_cycle : 1;
+		if (poll_net)
+			delta = std::min<u64>(delta, net_poll_delta);
 		s_host->ScheduleEvent(delta);
 	}
 
@@ -2884,7 +2925,7 @@ namespace
 
 		if (queued_status)
 			FlushPendingDbufR0RxPacket();
-		SchedulePendingSectorStatusEvent();
+		ScheduleDeviceEvent();
 	}
 
 	void SchedulePopnUartStream()
@@ -2960,7 +3001,7 @@ namespace
 		const u64 ready_cycle = start_cycle + CalculateStorageReadCycles(byte_count);
 		s_next_sector_read_ready_cycle = ready_cycle;
 		s_pending_sector_status_writes.push_back({ready_cycle, status_offset, checksum});
-		SchedulePendingSectorStatusEvent();
+		ScheduleDeviceEvent();
 	}
 
 	bool QueuePendingSectorAndStatusPackets(u32 dest, const std::vector<u8>& data, u32 status_offset, bool defer_status)
@@ -3449,27 +3490,61 @@ namespace
 		return port.value_or(80);
 	}
 
-	bool TryGetPython1ServerAddress(std::array<u8, 4>* address)
+	void StartPython1ServerResolve()
 	{
 		const std::string url = GetPython1GamePath("ServerUrl", "PCSX2_FW_SERVER_URL");
-		if (url.empty())
-			return false;
+		if (url.empty() || url == s_net_server_url)
+			return;
 
-		if (url != s_net_server_url)
+		s_net_server_url = url;
+		s_net_server_port = ParsePython1ServerPort(url);
+		s_net_server_address_valid = false;
+
+		std::string host = ParsePython1ServerHost(url);
+		s_net_resolve_future = std::async(std::launch::async, [host]() {
+			std::array<u8, 4> resolved = {};
+			if (!ResolvePython1ServerAddress(host, &resolved))
+				return std::optional<std::array<u8, 4>>();
+			return std::optional<std::array<u8, 4>>(resolved);
+		});
+	}
+
+	void PumpPython1ServerResolve(bool wait_for_completion)
+	{
+		StartPython1ServerResolve();
+
+		if (!s_net_resolve_future.valid())
+			return;
+
+		if (!wait_for_completion &&
+			s_net_resolve_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 		{
-			s_net_server_url = url;
-			s_net_server_port = ParsePython1ServerPort(url);
-			s_net_server_address_valid = ResolvePython1ServerAddress(ParsePython1ServerHost(url), &s_net_server_address);
-			if (s_net_server_address_valid)
-			{
-				Console.WriteLn("FW NET: server '%s' resolved to %u.%u.%u.%u:%u", url.c_str(), s_net_server_address[0],
-					s_net_server_address[1], s_net_server_address[2], s_net_server_address[3], s_net_server_port);
-			}
-			else
-			{
-				Console.Error("FW NET: could not resolve server '%s', staying offline", url.c_str());
-			}
+			return;
 		}
+
+		const std::optional<std::array<u8, 4>> resolved = s_net_resolve_future.get();
+		s_net_server_address_valid = resolved.has_value();
+		if (resolved.has_value())
+		{
+			s_net_server_address = resolved.value();
+			Console.WriteLn("FW NET: server '%s' resolved to %u.%u.%u.%u:%u", s_net_server_url.c_str(),
+				s_net_server_address[0], s_net_server_address[1], s_net_server_address[2], s_net_server_address[3],
+				s_net_server_port);
+		}
+		else
+		{
+			Console.Error("FW NET: could not resolve server '%s', staying offline", s_net_server_url.c_str());
+		}
+	}
+
+	bool IsPython1ServerResolvePending()
+	{
+		return s_net_resolve_future.valid();
+	}
+
+	bool TryGetPython1ServerAddress(std::array<u8, 4>* address)
+	{
+		PumpPython1ServerResolve(false);
 
 		if (!s_net_server_address_valid)
 			return false;
@@ -3480,8 +3555,8 @@ namespace
 
 	bool IsPython1NetworkOnline()
 	{
-		std::array<u8, 4> address = {};
-		return TryGetPython1ServerAddress(&address);
+		PumpPython1ServerResolve(true);
+		return s_net_server_address_valid;
 	}
 
 	void BuildOfflineConfiguredIp()
@@ -3542,6 +3617,20 @@ namespace
 		return true;
 	}
 
+	bool IsNetChannelReadable(u32 channel)
+	{
+		const NetSocket handle = s_net_sockets[channel].handle;
+		if (handle == NET_INVALID_SOCKET)
+			return false;
+
+		fd_set read_set;
+		FD_ZERO(&read_set);
+		FD_SET(handle, &read_set);
+
+		timeval timeout = {};
+		return select(static_cast<int>(handle) + 1, &read_set, nullptr, nullptr, &timeout) > 0;
+	}
+
 	void CloseNetChannelSocket(u32 channel)
 	{
 		Python1NetSocket& socket_state = s_net_sockets[channel];
@@ -3561,61 +3650,135 @@ namespace
 		socket_state.is_raw = false;
 	}
 
-	void SetNetSocketTimeout(NetSocket handle, u32 milliseconds)
+	bool SetNetSocketNonBlocking(NetSocket handle)
 	{
 #ifdef _WIN32
-		const DWORD timeout = milliseconds;
-		setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-		setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+		u_long non_blocking = 1;
+		return ioctlsocket(handle, FIONBIO, &non_blocking) == 0;
 #else
-		timeval timeout = {};
-		timeout.tv_sec = static_cast<time_t>(milliseconds / 1000);
-		timeout.tv_usec = static_cast<suseconds_t>((milliseconds % 1000) * 1000);
-		setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-		setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+		const int flags = fcntl(handle, F_GETFL, 0);
+		return flags >= 0 && fcntl(handle, F_SETFL, flags | O_NONBLOCK) == 0;
 #endif
 	}
 
-	bool ConnectNetChannelToServer(u32 channel)
+	bool WouldBlockNetSocket()
 	{
-		if (!s_net_sockets[channel].is_stream)
-			return false;
+#ifdef _WIN32
+		const int error = WSAGetLastError();
+		return error == WSAEWOULDBLOCK || error == WSAEINPROGRESS;
+#else
+		return errno == EWOULDBLOCK || errno == EAGAIN || errno == EINPROGRESS;
+#endif
+	}
 
-		std::array<u8, 4> address = {};
-		if (!TryGetPython1ServerAddress(&address))
-			return false;
-
-		const bool is_stream = s_net_sockets[channel].is_stream;
-		CloseNetChannelSocket(channel);
-		s_net_sockets[channel].is_stream = is_stream;
-
-		const NetSocket handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	bool IsNetChannelWritable(u32 channel)
+	{
+		const NetSocket handle = s_net_sockets[channel].handle;
 		if (handle == NET_INVALID_SOCKET)
 			return false;
 
-		SetNetSocketTimeout(handle, KONAMI_NET_SOCKET_TIMEOUT_MS);
+		fd_set write_set;
+		FD_ZERO(&write_set);
+		FD_SET(handle, &write_set);
+
+		fd_set error_set;
+		FD_ZERO(&error_set);
+		FD_SET(handle, &error_set);
+
+		timeval timeout = {};
+		return select(static_cast<int>(handle) + 1, nullptr, &write_set, &error_set, &timeout) > 0;
+	}
+
+	int GetNetSocketError(NetSocket handle)
+	{
+		int error = 0;
+		socklen_t length = sizeof(error);
+		if (getsockopt(handle, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0)
+			return -1;
+		return error;
+	}
+
+	void CloseNetChannelSocketHandle(NetSocket handle)
+	{
+#ifdef _WIN32
+		closesocket(handle);
+#else
+		close(handle);
+#endif
+	}
+
+	enum class Python1NetConnectResult
+	{
+		Connected,
+		InProgress,
+		Failed,
+	};
+
+	Python1NetConnectResult BeginConnectNetChannelToServer(u32 channel)
+	{
+		if (!s_net_sockets[channel].is_stream)
+			return Python1NetConnectResult::Failed;
+
+		std::array<u8, 4> address = {};
+		if (!TryGetPython1ServerAddress(&address))
+			return IsPython1ServerResolvePending() ? Python1NetConnectResult::InProgress : Python1NetConnectResult::Failed;
+
+		CloseNetChannelSocket(channel);
+		s_net_sockets[channel].is_stream = true;
+
+		const NetSocket handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (handle == NET_INVALID_SOCKET)
+			return Python1NetConnectResult::Failed;
+
+		if (!SetNetSocketNonBlocking(handle))
+		{
+			CloseNetChannelSocketHandle(handle);
+			return Python1NetConnectResult::Failed;
+		}
 
 		sockaddr_in target = {};
 		target.sin_family = AF_INET;
 		target.sin_port = htons(s_net_server_port);
 		std::memcpy(&target.sin_addr, address.data(), address.size());
 
-		if (connect(handle, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) != 0)
+		s_net_sockets[channel].handle = handle;
+
+		if (connect(handle, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) == 0)
 		{
-			Console.Error("FW NET: connect to %u.%u.%u.%u:%u failed", address[0], address[1], address[2], address[3],
-				s_net_server_port);
-#ifdef _WIN32
-			closesocket(handle);
-#else
-			close(handle);
-#endif
+			Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, address[0], address[1],
+				address[2], address[3], s_net_server_port);
+			return Python1NetConnectResult::Connected;
+		}
+
+		if (WouldBlockNetSocket())
+		{
+			if (FW_NET_LOGS)
+				Console.WriteLn("FW NET: connect in progress channel=%u to %u.%u.%u.%u:%u", channel, address[0],
+					address[1], address[2], address[3], s_net_server_port);
+			return Python1NetConnectResult::InProgress;
+		}
+
+		Console.Error("FW NET: connect to %u.%u.%u.%u:%u failed", address[0], address[1], address[2], address[3],
+			s_net_server_port);
+		CloseNetChannelSocket(channel);
+		return Python1NetConnectResult::Failed;
+	}
+
+	bool FinishConnectNetChannel(u32 channel)
+	{
+		const NetSocket handle = s_net_sockets[channel].handle;
+		if (handle == NET_INVALID_SOCKET)
+			return false;
+
+		if (GetNetSocketError(handle) != 0)
+		{
+			Console.Error("FW NET: connect failed channel=%u", channel);
+			CloseNetChannelSocket(channel);
 			return false;
 		}
 
-		s_net_sockets[channel].handle = handle;
-		s_net_sockets[channel].is_stream = true;
-		Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, address[0], address[1], address[2],
-			address[3], s_net_server_port);
+		Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, s_net_server_address[0],
+			s_net_server_address[1], s_net_server_address[2], s_net_server_address[3], s_net_server_port);
 		return true;
 	}
 
@@ -3632,31 +3795,89 @@ namespace
 		Console.WriteLn("%s", text.c_str());
 	}
 
-	bool TransferNetChannelStream(u32 channel, bool sending, u32 address, u32 byte_count, u32* transferred)
+	enum class Python1NetTransferResult
+	{
+		Complete,
+		InProgress,
+		Failed,
+	};
+
+	Python1NetTransferResult SendNetChannelBuffer(u32 channel, Python1NetPendingOperation& operation)
+	{
+		const NetSocket handle = s_net_sockets[channel].handle;
+		if (handle == NET_INVALID_SOCKET)
+			return Python1NetTransferResult::Failed;
+
+		while (operation.send_offset < operation.send_buffer.size())
+		{
+			const int remaining = static_cast<int>(operation.send_buffer.size() - operation.send_offset);
+			const int sent = send(handle, reinterpret_cast<const char*>(operation.send_buffer.data()) + operation.send_offset,
+				remaining, 0);
+			if (sent > 0)
+			{
+				operation.send_offset += static_cast<u32>(sent);
+				continue;
+			}
+
+			if (sent < 0 && WouldBlockNetSocket())
+				return Python1NetTransferResult::InProgress;
+
+			Console.Error("FW NET: send failed channel=%u bytes=%u", channel, remaining);
+			return Python1NetTransferResult::Failed;
+		}
+
+		if (FW_NET_LOGS)
+			Console.WriteLn("FW NET: sent channel=%u bytes=%u", channel, operation.send_offset);
+		return Python1NetTransferResult::Complete;
+	}
+
+	bool BeginSendNetChannelBuffer(u32 channel, u32 address, u32 byte_count, Python1NetPendingOperation& operation)
+	{
+		if (s_net_sockets[channel].handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
+			return false;
+
+		operation.send_buffer.resize(byte_count);
+		operation.send_offset = 0;
+		return ReadIopMemory(address, operation.send_buffer.data(), byte_count);
+	}
+
+	const char* GetPendingNetOperationName(Python1NetPendingKind kind)
+	{
+		switch (kind)
+		{
+			case Python1NetPendingKind::Connect:
+				return "connect";
+			case Python1NetPendingKind::Send:
+				return "send";
+			case Python1NetPendingKind::Receive:
+				return "receive";
+			default:
+				return "none";
+		}
+	}
+
+	void BeginPendingNetOperation(u32 channel, Python1NetPendingKind kind, u32 address, u32 byte_count)
+	{
+		Python1NetPendingOperation& operation = s_net_pending_operations[channel];
+		operation.kind = kind;
+		operation.address = address;
+		operation.byte_count = byte_count;
+		operation.timeout_cycle = GetCurrentCycle() +
+			(static_cast<u64>(PSXCLK) / 1000) * KONAMI_NET_SOCKET_TIMEOUT_MS;
+		ScheduleDeviceEvent();
+
+		if (FW_NET_LOGS)
+			Console.WriteLn("FW NET: deferred %s channel=%u bytes=%u", GetPendingNetOperationName(kind), channel,
+				byte_count);
+	}
+
+	bool ReceiveNetChannelStream(u32 channel, u32 address, u32 byte_count, u32* transferred)
 	{
 		const NetSocket handle = s_net_sockets[channel].handle;
 		if (handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
 			return false;
 
 		std::vector<u8> buffer(byte_count);
-		if (sending)
-		{
-			if (!ReadIopMemory(address, buffer.data(), byte_count))
-				return false;
-
-			const int sent = send(handle, reinterpret_cast<const char*>(buffer.data()), static_cast<int>(byte_count), 0);
-			if (sent <= 0)
-			{
-				Console.Error("FW NET: send failed channel=%u bytes=%u", channel, byte_count);
-				return false;
-			}
-
-			*transferred = static_cast<u32>(sent);
-			if (FW_NET_LOGS)
-				Console.WriteLn("FW NET: sent channel=%u bytes=%u", channel, *transferred);
-			return true;
-		}
-
 		const int received = recv(handle, reinterpret_cast<char*>(buffer.data()), static_cast<int>(byte_count), 0);
 		if (received < 0)
 		{
@@ -4018,26 +4239,63 @@ namespace
 
 		if (command == 0x0b && payload_quads >= 3)
 		{
+			s_net_pending_operations[channel] = {};
 			CloseNetChannelSocket(channel);
 			s_net_sockets[channel].is_stream = payload[2] == KONAMI_NET_SOCKET_TYPE_STREAM;
 			s_net_sockets[channel].is_raw = payload[2] == KONAMI_NET_SOCKET_TYPE_RAW;
 		}
 		else if (command == 0x1d)
 		{
+			s_net_pending_operations[channel] = {};
 			CloseNetChannelSocket(channel);
 		}
 
 		bool stream_connected = false;
 		if (command == 0x0f)
-			stream_connected = ConnectNetChannelToServer(channel);
+		{
+			const Python1NetConnectResult result = BeginConnectNetChannelToServer(channel);
+			if (result == Python1NetConnectResult::InProgress)
+			{
+				BeginPendingNetOperation(channel, Python1NetPendingKind::Connect, 0, 0);
+				return true;
+			}
+
+			stream_connected = result == Python1NetConnectResult::Connected;
+		}
 
 		u32 stream_transferred = 0;
 		bool stream_transfer_done = false;
 		if ((command == 0x14 || command == 0x16) && payload_quads >= 4 &&
 			s_net_sockets[channel].handle != NET_INVALID_SOCKET)
 		{
-			stream_transfer_done = TransferNetChannelStream(channel, command == 0x14, payload[2], payload[3],
-				&stream_transferred);
+			if (command == 0x16)
+			{
+				if (!IsNetChannelReadable(channel))
+				{
+					BeginPendingNetOperation(channel, Python1NetPendingKind::Receive, payload[2], payload[3]);
+					return true;
+				}
+
+				stream_transfer_done = ReceiveNetChannelStream(channel, payload[2], payload[3], &stream_transferred);
+			}
+			else
+			{
+				Python1NetPendingOperation& operation = s_net_pending_operations[channel];
+				if (BeginSendNetChannelBuffer(channel, payload[2], payload[3], operation))
+				{
+					const Python1NetTransferResult result = SendNetChannelBuffer(channel, operation);
+					if (result == Python1NetTransferResult::InProgress)
+					{
+						BeginPendingNetOperation(channel, Python1NetPendingKind::Send, payload[2], payload[3]);
+						return true;
+					}
+
+					stream_transfer_done = result == Python1NetTransferResult::Complete;
+					stream_transferred = payload[3];
+				}
+				operation.send_buffer.clear();
+				operation.send_offset = 0;
+			}
 		}
 
 		if (FW_NET_LOGS && (command == 0x14 || command == 0x15) && payload_quads >= 4)
@@ -4443,6 +4701,7 @@ namespace
 		LoadDallasDongles();
 		LoadConfigRom();
 		LoadPopnCard();
+		StartPython1ServerResolve();
 		SoftResetRuntimeState();
 		return true;
 	}
@@ -4583,8 +4842,102 @@ namespace
 		}
 	}
 
+	void CompletePendingNetOperation(u32 channel, u32 response_value)
+	{
+		s_net_pending_operations[channel].kind = Python1NetPendingKind::None;
+		s_net_pending_operations[channel].send_buffer.clear();
+		s_net_pending_operations[channel].send_offset = 0;
+
+		std::array<u32, 8> response = {};
+		response[1] = response_value;
+		QueuePendingDbufBlockWrite(0xfffe, KONAMI_NET_RESPONSE_OFFSET_BASE + channel * KONAMI_NET_RESPONSE_STRIDE,
+			response.data(), static_cast<u32>(response.size()));
+		FlushPendingDbufR0RxPacket();
+	}
+
+	void ServicePendingNetOperations()
+	{
+		for (u32 channel = 0; channel < KONAMI_NET_CHANNEL_COUNT; channel++)
+		{
+			Python1NetPendingOperation& operation = s_net_pending_operations[channel];
+			if (operation.kind == Python1NetPendingKind::None)
+				continue;
+
+			const bool timed_out = GetCurrentCycle() >= operation.timeout_cycle;
+			const bool socket_lost = operation.kind != Python1NetPendingKind::Connect &&
+									 s_net_sockets[channel].handle == NET_INVALID_SOCKET;
+
+			if (socket_lost || timed_out)
+			{
+				Console.Error("FW NET: %s %s channel=%u bytes=%u", GetPendingNetOperationName(operation.kind),
+					socket_lost ? "lost its socket" : "timed out", channel, operation.byte_count);
+
+				const bool is_connect = operation.kind == Python1NetPendingKind::Connect;
+				const u32 byte_count = operation.byte_count;
+				const bool is_send = operation.kind == Python1NetPendingKind::Send;
+				CloseNetChannelSocket(channel);
+				CompletePendingNetOperation(channel,
+					is_connect ? ByteSwap32(0xffffffff) : (is_send ? ByteSwap32(byte_count) : 0));
+				continue;
+			}
+
+			switch (operation.kind)
+			{
+				case Python1NetPendingKind::Connect:
+				{
+					if (s_net_sockets[channel].handle == NET_INVALID_SOCKET)
+					{
+						const Python1NetConnectResult result = BeginConnectNetChannelToServer(channel);
+						if (result == Python1NetConnectResult::InProgress)
+							continue;
+
+						CompletePendingNetOperation(channel,
+							result == Python1NetConnectResult::Connected ? 0 : ByteSwap32(0xffffffff));
+						break;
+					}
+
+					if (!IsNetChannelWritable(channel))
+						continue;
+
+					const bool connected = FinishConnectNetChannel(channel);
+					CompletePendingNetOperation(channel, connected ? 0 : ByteSwap32(0xffffffff));
+					break;
+				}
+
+				case Python1NetPendingKind::Send:
+				{
+					if (!IsNetChannelWritable(channel))
+						continue;
+
+					const Python1NetTransferResult result = SendNetChannelBuffer(channel, operation);
+					if (result == Python1NetTransferResult::InProgress)
+						continue;
+
+					CompletePendingNetOperation(channel, ByteSwap32(operation.byte_count));
+					break;
+				}
+
+				case Python1NetPendingKind::Receive:
+				{
+					if (!IsNetChannelReadable(channel))
+						continue;
+
+					u32 transferred = 0;
+					const bool received = ReceiveNetChannelStream(channel, operation.address, operation.byte_count,
+						&transferred);
+					CompletePendingNetOperation(channel, received ? ByteSwap32(transferred) : 0);
+					break;
+				}
+
+				case Python1NetPendingKind::None:
+					break;
+			}
+		}
+	}
+
 	void KonamiPython1Device::ServiceEvents()
 	{
+		ServicePendingNetOperations();
 		ServicePendingSectorStatusWrites();
 		ServicePopnUartStream();
 		ServicePopnNetStateLog();
@@ -4645,7 +4998,11 @@ namespace
 		}
 
 		if (sw.IsReading())
-			SchedulePendingSectorStatusEvent();
+		{
+			for (Python1NetPendingOperation& pending : s_net_pending_operations)
+				pending = {};
+			ScheduleDeviceEvent();
+		}
 		return !sw.HasError();
 	}
 
