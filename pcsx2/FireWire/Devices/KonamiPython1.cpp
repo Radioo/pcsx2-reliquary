@@ -5,6 +5,7 @@
 
 #include "Common.h"
 #include "ChdHddImage.h"
+#include "Config.h"
 #include "Host.h"
 #include "StateWrapper.h"
 
@@ -17,6 +18,8 @@
 #include "common/StringUtil.h"
 
 extern "C" {
+#include "des.h"
+
 #include "ff.h"
 #include "diskio.h"
 }
@@ -24,6 +27,7 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,9 +38,22 @@ extern "C" {
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include "common/RedtapeWindows.h"
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#undef s_host
+#undef s_net
+#else
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+
 namespace
 {
 	constexpr bool FW_VERBOSE_LOGS = false;
+	constexpr bool FW_NET_LOGS = true;
 	constexpr u32 UART_RX_QUEUE_LIMIT = 0x400;
 	constexpr u32 UART_CALLBACK_BYTE_LIMIT = 38;
 	constexpr u64 KONAMI_STORAGE_READ_BYTES_PER_SECOND = 24ull * 1024 * 1024;
@@ -65,6 +82,35 @@ namespace
 	constexpr u32 KONAMI_NET_RESPONSE_OFFSET_BASE = 0x000b0000;
 	constexpr u32 KONAMI_NET_RESPONSE_STRIDE = 0x1000;
 	constexpr u32 KONAMI_NET_CHANNEL_COUNT = 8;
+	constexpr u64 POPN_SECURITY_AREA_KEY = 0x9740292336d4331bull;
+	constexpr u32 POPN_PCB_ID_LENGTH = 20;
+	constexpr u32 POPN_PCB_ID_ROM_OFFSET = 4;
+	constexpr u8 POPN_PCB_ID_ROM_ORDER[] = {0, 6, 5, 4, 3, 2, 1, 7};
+	constexpr u32 POPN_PCB_ID_PREFIX_LENGTH = 4;
+	constexpr const char* POPN_PCB_ID_FORMAT_TAIL = "%02X%02X%02X%02X%02X%02X%02X%02X";
+	constexpr u32 POPN_EE_SCAN_BASE = 0x00100000;
+	constexpr u32 POPN_EE_SCAN_SIZE = 0x00300000;
+	constexpr u32 POPN_EE_SCAN_CHUNK = 0x10000;
+	constexpr u32 POPN_EE_NET_STATE_ADDRESS = 0x0116b238;
+	constexpr u32 POPN_EE_NET_STATUS_ADDRESS = 0x0116b240;
+	constexpr u32 POPN_EE_SERVICE_REGISTRY_PTR = 0x0025804c;
+	constexpr u32 POPN_EE_MODULE_LIST_PTR = 0x00257f30;
+	constexpr u32 POPN_EE_MAX_REGISTRY_ENTRIES = 64;
+	constexpr u32 POPN_EE_MAX_STRING = 128;
+	constexpr u8 ICMP_ECHO_REQUEST = 8;
+	constexpr u8 ICMP_ECHO_REPLY = 0;
+	constexpr u8 IP_PROTOCOL_ICMP = 1;
+	constexpr u32 KONAMI_NET_SOCKET_TYPE_RAW = 3;
+	constexpr u32 KONAMI_SECURITY_ID_SIZE = 6;
+	constexpr u32 KONAMI_SECURITY_SIGNATURE_OFFSET = 6;
+	constexpr u8 DES_PERMUTED_CHOICE_1[] = {
+		57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18,
+		10, 2, 59, 51, 43, 35, 27, 19, 11, 3, 60, 52, 44, 36,
+		63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22,
+		14, 6, 61, 53, 45, 37, 29, 21, 13, 5, 28, 20, 12, 4,
+	};
+	constexpr u32 KONAMI_NET_SOCKET_TIMEOUT_MS = 5000;
+	constexpr u32 KONAMI_NET_SOCKET_TYPE_STREAM = 1;
 	constexpr u32 KONAMI_JAMMA_INIT_COMMAND_OFFSET = 0x0e0;
 	constexpr u32 KONAMI_JAMMA_OUTPUT_COMMAND_OFFSET = 0x0f80;
 	constexpr u32 INVALID_JAMMA_INPUT_DEST = 0xffffffffu;
@@ -152,7 +198,37 @@ namespace
 		P1IO_BIND_P2_BUTTON4,
 		P1IO_BIND_P2_BUTTON5,
 		P1IO_BIND_P2_BUTTON6,
+		P1IO_BIND_CARD_INSERT,
 		P1IO_BIND_COUNT,
+	};
+
+	enum P1IOPopnKeypadKey : u32
+	{
+		P1IO_POPN_KEYPAD_0,
+		P1IO_POPN_KEYPAD_1,
+		P1IO_POPN_KEYPAD_2,
+		P1IO_POPN_KEYPAD_3,
+		P1IO_POPN_KEYPAD_4,
+		P1IO_POPN_KEYPAD_5,
+		P1IO_POPN_KEYPAD_6,
+		P1IO_POPN_KEYPAD_7,
+		P1IO_POPN_KEYPAD_8,
+		P1IO_POPN_KEYPAD_9,
+		P1IO_POPN_KEYPAD_ENTER,
+		P1IO_POPN_KEYPAD_BACKSPACE,
+		P1IO_POPN_KEYPAD_DOT,
+		P1IO_POPN_KEYPAD_PLUS,
+		P1IO_POPN_KEYPAD_MINUS,
+		P1IO_POPN_KEYPAD_STAR,
+		P1IO_POPN_KEYPAD_SLASH,
+		P1IO_POPN_KEYPAD_NUMLOCK,
+		P1IO_POPN_KEYPAD_COUNT,
+	};
+
+	constexpr u32 P1IO_POPN_KEYPAD_BIND_BASE = 0x800;
+	constexpr u8 P1IO_POPN_KEYPAD_SCANCODES[P1IO_POPN_KEYPAD_COUNT] = {
+		0x70, 0x69, 0x72, 0x7a, 0x6b, 0x73, 0x74, 0x6c, 0x75, 0x7d,
+		0x5a, 0x66, 0x71, 0x79, 0x7b, 0x7c, 0x4a, 0x77,
 	};
 
 	enum class Python1IOMode
@@ -198,6 +274,25 @@ namespace
 		{"P2Button4", "P2 Button 4", nullptr, InputBindingInfo::Type::Button, P1IO_BIND_P2_BUTTON4, GenericInputBinding::Unknown},
 		{"P2Button5", "P2 Button 5", nullptr, InputBindingInfo::Type::Button, P1IO_BIND_P2_BUTTON5, GenericInputBinding::Unknown},
 		{"P2Button6", "P2 Button 6", nullptr, InputBindingInfo::Type::Button, P1IO_BIND_P2_BUTTON6, GenericInputBinding::Unknown},
+		{"CardInsert", "Insert Card", nullptr, InputBindingInfo::Type::Button, P1IO_BIND_CARD_INSERT, GenericInputBinding::Unknown},
+		{"Keypad0", "Keypad 0", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_0, GenericInputBinding::Unknown},
+		{"Keypad1", "Keypad 1", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_1, GenericInputBinding::Unknown},
+		{"Keypad2", "Keypad 2", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_2, GenericInputBinding::Unknown},
+		{"Keypad3", "Keypad 3", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_3, GenericInputBinding::Unknown},
+		{"Keypad4", "Keypad 4", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_4, GenericInputBinding::Unknown},
+		{"Keypad5", "Keypad 5", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_5, GenericInputBinding::Unknown},
+		{"Keypad6", "Keypad 6", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_6, GenericInputBinding::Unknown},
+		{"Keypad7", "Keypad 7", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_7, GenericInputBinding::Unknown},
+		{"Keypad8", "Keypad 8", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_8, GenericInputBinding::Unknown},
+		{"Keypad9", "Keypad 9", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_9, GenericInputBinding::Unknown},
+		{"KeypadEnter", "Keypad Enter", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_ENTER, GenericInputBinding::Unknown},
+		{"KeypadBackspace", "Keypad Backspace", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_BACKSPACE, GenericInputBinding::Unknown},
+		{"KeypadDot", "Keypad .", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_DOT, GenericInputBinding::Unknown},
+		{"KeypadPlus", "Keypad +", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_PLUS, GenericInputBinding::Unknown},
+		{"KeypadMinus", "Keypad -", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_MINUS, GenericInputBinding::Unknown},
+		{"KeypadStar", "Keypad *", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_STAR, GenericInputBinding::Unknown},
+		{"KeypadSlash", "Keypad /", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_SLASH, GenericInputBinding::Unknown},
+		{"KeypadNumLock", "Keypad NumLock", nullptr, InputBindingInfo::Type::Button, P1IO_POPN_KEYPAD_BIND_BASE + P1IO_POPN_KEYPAD_NUMLOCK, GenericInputBinding::Unknown},
 		{"Keyboard1", "Keyboard Player 1", nullptr, InputBindingInfo::Type::Keyboard, P1IO_KEYBOARD_BIND_BASE, GenericInputBinding::Unknown},
 	};
 
@@ -227,11 +322,8 @@ namespace
 		0x00, 0x04, 0x5f, 0x00, 0x00, 0x01,
 		0xff, 0xfb, 0xa0, 0xff, 0xff, 0xfe,
 	};
-	constexpr u8 KONAMI_NET_IP_ADDRESS[] = {192, 168, 50, 2};
 	constexpr u8 KONAMI_NET_SUBNET_MASK[] = {255, 255, 255, 0};
-	constexpr u8 KONAMI_NET_GATEWAY[] = {192, 168, 50, 1};
-	constexpr u8 KONAMI_NET_PRIMARY_DNS[] = {192, 168, 50, 1};
-	constexpr bool KONAMI_NET_FORCE_OFFLINE = true;
+	constexpr u8 KONAMI_NET_ONLINE_GATEWAY[] = {192, 168, 1, 1};
 	constexpr u8 KONAMI_NET_OFFLINE_IP_ADDRESS[] = {169, 254, 50, 2};
 	constexpr u8 KONAMI_NET_OFFLINE_GATEWAY[] = {0, 0, 0, 0};
 	constexpr u8 KONAMI_NET_OFFLINE_DNS[] = {0, 0, 0, 0};
@@ -441,12 +533,19 @@ namespace
 		u32 GetBindingState() const;
 		bool IsKeyboard1KeyPressed(Python1KeyboardKey key) const;
 		u32 PopKeyboard1Events(u8* dest, u32 max_events);
+		bool IsPopnKeypadKeyPressed(u32 key) const;
+		u32 PopPopnKeypadEvents(u8* dest, u32 max_events);
 
 	private:
+		void SetPopnKeypadKey(u32 key, bool pressed);
+
 		std::atomic<u32> m_p1io_bind_state{0};
 		mutable std::mutex m_keyboard1_mutex;
 		std::array<bool, 0x200> m_keyboard1_pressed = {};
 		std::vector<u8> m_keyboard1_events;
+		mutable std::mutex m_popn_keypad_mutex;
+		std::array<bool, P1IO_POPN_KEYPAD_COUNT> m_popn_keypad_pressed = {};
+		std::vector<u8> m_popn_keypad_events;
 	};
 
 	FireWire::FireWireDeviceHost* s_host = nullptr;
@@ -467,6 +566,31 @@ namespace
 	bool s_cf_pythonfs_file_open = false;
 	bool s_pythonfs_formatted = false;
 	std::vector<PendingNetPacket> s_net_rx_packets[KONAMI_NET_CHANNEL_COUNT];
+	std::string s_net_server_url;
+	std::array<u8, 4> s_net_server_address = {};
+	u16 s_net_server_port = 80;
+	bool s_net_server_address_valid = false;
+
+#ifdef _WIN32
+	using NetSocket = SOCKET;
+	constexpr NetSocket NET_INVALID_SOCKET = INVALID_SOCKET;
+#else
+	using NetSocket = int;
+	constexpr NetSocket NET_INVALID_SOCKET = -1;
+#endif
+
+	struct Python1NetSocket
+	{
+		NetSocket handle = NET_INVALID_SOCKET;
+		bool is_stream = false;
+		bool is_raw = false;
+	};
+
+	Python1NetSocket s_net_sockets[KONAMI_NET_CHANNEL_COUNT];
+	std::string s_popn_pcb_id_prefix;
+	bool s_popn_pcb_id_prefix_patched = false;
+	u32 s_popn_net_state = 0xffffffff;
+	u32 s_popn_net_status = 0xffffffff;
 	std::array<u8, 64> s_net_property_response;
 	std::vector<u8> s_uart_rx_fifo;
 	u8 s_bootrom[BOOTROM_SIZE];
@@ -487,6 +611,7 @@ namespace
 	u32 s_p1io_output_latch_byte = 0;
 	u32 s_p1io_memcard_slot = 1;
 	u64 s_next_sector_read_ready_cycle;
+	u64 s_popn_uart_stream_cycle = 0;
 	SubboardAdpcmPlayback s_subboard_adpcm;
 
 	u32 ByteSwap32(u32 value);
@@ -499,6 +624,11 @@ namespace
 	void SaveBootromIfDirty();
 	void SaveBbsramIfDirty();
 	void SaveDallasDongleIfDirty();
+	std::string GetPython1GamePath(const char* key, const char* env_key);
+	bool WriteBinaryFile(const std::string& path, const void* data, size_t size);
+	bool QueueUartReadData(u32 requested_bytes);
+	void SchedulePopnUartStream();
+	void ServicePopnUartStream();
 	void CloseHddImageFile();
 	void CloseCfImageFile();
 	void ResetSubboardAdpcmPlayback();
@@ -514,6 +644,16 @@ namespace
 	bool WriteIopMemory(u32 address, const void* data, u32 size)
 	{
 		return s_host && s_host->WriteIopMemory(address, data, size);
+	}
+
+	bool ReadEeMemory(u32 address, void* data, u32 size)
+	{
+		return s_host && s_host->ReadEeMemory(address, data, size);
+	}
+
+	bool WriteEeMemory(u32 address, const void* data, u32 size)
+	{
+		return s_host && s_host->WriteEeMemory(address, data, size);
 	}
 
 	u64 GetCurrentCycle()
@@ -537,6 +677,15 @@ namespace
 	{
 		if (s_host)
 			s_host->QueueRemoteAsyncWriteBytes(offset_high, offset_low, payload, byte_count);
+	}
+
+	void QueuePendingDbufByteWriteChunked(u32 offset_high, u32 offset_low, const u8* payload, u32 byte_count)
+	{
+		for (u32 transfer_offset = 0; transfer_offset < byte_count; transfer_offset += KONAMI_DBUF_WRITEB_MAX_PAYLOAD)
+		{
+			const u32 chunk = std::min<u32>(KONAMI_DBUF_WRITEB_MAX_PAYLOAD, byte_count - transfer_offset);
+			QueuePendingDbufByteWrite(offset_high, offset_low + transfer_offset, payload + transfer_offset, chunk);
+		}
 	}
 
 	void FlushPendingDbufR0RxPacket()
@@ -825,6 +974,425 @@ namespace
 		return 0;
 	}
 
+	constexpr u32 POPN_CARD_RECORD_SIZE = 65;
+	constexpr u32 POPN_CARD_FILE_SIZE = 128;
+	constexpr u32 POPN_CARD_READ_REPLY_DATA_SIZE = 130;
+	constexpr u32 POPN_CARD_READ_REPLY_RECORD_OFFSET = 2;
+	constexpr u32 POPN_KEYPAD_MAX_EVENTS_PER_POLL = 8;
+	constexpr u8 POPN_CARD_NEW_HEADER[] = {0x28, 0x23, 0x41, 0x01};
+	constexpr u8 POPN_CARD_USED_HEADER[] = {0x68, 0x23, 0x41, 0x01};
+	constexpr u32 POPN_CARD_ID_OFFSET = 6;
+	constexpr u8 POPN_READER_PRODUCT_REPLY_TAIL[] = {
+		0x01, 0x00, 0x00, 0x00,
+		0x00,
+		0x01, 0x00, 0x00,
+		'C', 'A', 'R', 'D', ' ', 'R', '/', 'W',
+	};
+	constexpr const char* POPN_CARD_DEFAULT_FILENAME = "python1_popn_card.bin";
+
+	enum PopnReaderControlOp : u8
+	{
+		POPN_READER_CONTROL_OPEN = 1,
+		POPN_READER_CONTROL_EJECT = 2,
+		POPN_READER_CONTROL_READ = 4,
+		POPN_READER_CONTROL_WRITE = 5,
+	};
+
+	enum PopnReaderStatusBit : u8
+	{
+		POPN_READER_STATUS_ERROR = 0x01,
+		POPN_READER_STATUS_WRITE_BUFFER_LOADED = 0x10,
+		POPN_READER_STATUS_READ_READY = 0x20,
+		POPN_READER_STATUS_CARD_INSIDE = 0x80,
+	};
+
+	struct PopnCardReaderState
+	{
+		bool shutter_open = false;
+		bool card_inside = false;
+		bool insert_pending = false;
+		bool read_ready = false;
+		bool write_buffer_loaded = false;
+		bool card_loaded = false;
+		std::array<u8, POPN_CARD_FILE_SIZE> card = {};
+		std::array<u8, POPN_CARD_FILE_SIZE> write_buffer = {};
+		std::string card_path;
+	};
+
+	PopnCardReaderState s_popn_reader;
+
+	u8 PopnCardCrc8(const u8* data, u32 size)
+	{
+		u8 crc = 0xff;
+		for (u32 i = 0; i < size; i++)
+		{
+			crc ^= data[i];
+			for (u32 bit = 0; bit < 8; bit++)
+				crc = (crc & 1) ? static_cast<u8>((crc >> 1) ^ 0x8c) : static_cast<u8>(crc >> 1);
+		}
+		return static_cast<u8>(~crc);
+	}
+
+	u16 PopnCardCrc16(const u8* data, u32 size)
+	{
+		u16 crc = 0xffff;
+		for (u32 i = 0; i < size; i++)
+		{
+			crc ^= data[i];
+			for (u32 bit = 0; bit < 8; bit++)
+				crc = (crc & 1) ? static_cast<u16>((crc >> 1) ^ 0x8408) : static_cast<u16>(crc >> 1);
+		}
+		return static_cast<u16>(~crc);
+	}
+
+	void FinalizePopnCardCrcs(std::array<u8, POPN_CARD_FILE_SIZE>& card)
+	{
+		card[4] = PopnCardCrc8(card.data(), 4);
+		const u16 data_crc = PopnCardCrc16(card.data() + 5, 58);
+		card[63] = static_cast<u8>(data_crc);
+		card[64] = static_cast<u8>(data_crc >> 8);
+	}
+
+	void BuildNewPopnCard(std::array<u8, POPN_CARD_FILE_SIZE>& card)
+	{
+		card.fill(0);
+		std::copy_n(POPN_CARD_NEW_HEADER, sizeof(POPN_CARD_NEW_HEADER), card.begin());
+		FinalizePopnCardCrcs(card);
+	}
+
+	std::optional<std::array<u8, 8>> GetPopnCardNumber()
+	{
+		std::string text = GetPython1GamePath("CardNumber", "PCSX2_FW_POPN_CARD_NUMBER");
+		std::string hex;
+		for (const char c : text)
+		{
+			if (std::isxdigit(static_cast<unsigned char>(c)))
+				hex.push_back(c);
+		}
+		if (hex.size() != 16)
+			return std::nullopt;
+
+		std::array<u8, 8> id = {};
+		for (u32 i = 0; i < 8; i++)
+			id[i] = static_cast<u8>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
+		return id;
+	}
+
+	void ApplyPopnCardNumber(std::array<u8, POPN_CARD_FILE_SIZE>& card, const std::array<u8, 8>& id)
+	{
+		std::copy_n(POPN_CARD_USED_HEADER, sizeof(POPN_CARD_USED_HEADER), card.begin());
+		for (u32 i = 0; i < 8; i++)
+			card[POPN_CARD_ID_OFFSET + i] = id[7 - i];
+		FinalizePopnCardCrcs(card);
+	}
+
+	std::string GetPopnCardPath()
+	{
+		return Path::Combine(EmuFolders::MemoryCards, POPN_CARD_DEFAULT_FILENAME);
+	}
+
+	void SavePopnCard()
+	{
+		if (s_popn_reader.card_path.empty())
+			return;
+		if (!WriteBinaryFile(s_popn_reader.card_path, s_popn_reader.card.data(), s_popn_reader.card.size()))
+			Console.Error("FW HLE: failed to save pop'n card file '%s'", s_popn_reader.card_path.c_str());
+	}
+
+	void LoadPopnCard()
+	{
+		s_popn_reader.card_path = GetPopnCardPath();
+		s_popn_reader.card_loaded = true;
+		s_popn_reader.card.fill(0);
+
+		const std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(s_popn_reader.card_path.c_str());
+		const bool have_file = data.has_value() && data->size() >= POPN_CARD_RECORD_SIZE;
+		if (have_file)
+			std::copy_n(data->begin(), std::min<size_t>(data->size(), s_popn_reader.card.size()), s_popn_reader.card.begin());
+
+		const std::optional<std::array<u8, 8>> number = GetPopnCardNumber();
+		if (number.has_value())
+		{
+			ApplyPopnCardNumber(s_popn_reader.card, number.value());
+			SavePopnCard();
+			Console.WriteLn("FW HLE: pop'n card '%s' set to configured number", s_popn_reader.card_path.c_str());
+			return;
+		}
+
+		if (have_file)
+		{
+			Console.WriteLn("FW HLE: loaded pop'n card '%s'", s_popn_reader.card_path.c_str());
+			return;
+		}
+
+		BuildNewPopnCard(s_popn_reader.card);
+		SavePopnCard();
+		Console.WriteLn("FW HLE: created new pop'n card '%s'", s_popn_reader.card_path.c_str());
+	}
+
+	void ResetPopnCardReaderRuntimeState()
+	{
+		s_popn_reader.shutter_open = false;
+		s_popn_reader.card_inside = false;
+		s_popn_reader.insert_pending = false;
+		s_popn_reader.read_ready = false;
+		s_popn_reader.write_buffer_loaded = false;
+		s_popn_reader.write_buffer.fill(0);
+	}
+
+	u8 GetPopnReaderStatus()
+	{
+		u8 status = 0;
+		if (s_popn_reader.card_inside)
+			status |= POPN_READER_STATUS_CARD_INSIDE;
+		if (s_popn_reader.read_ready)
+			status |= POPN_READER_STATUS_READ_READY;
+		if (s_popn_reader.write_buffer_loaded)
+			status |= POPN_READER_STATUS_WRITE_BUFFER_LOADED;
+		return status;
+	}
+
+	void InsertPopnCard()
+	{
+		s_popn_reader.card_inside = true;
+		s_popn_reader.insert_pending = false;
+		s_popn_reader.read_ready = false;
+		Host::AddKeyedOSDMessage("Python1PopnCard", "Card inserted into the reader.", 3.0f);
+	}
+
+	void UpdatePopnCardReaderInputs(u32 pressed)
+	{
+		if (GetPython1IOMode() != Python1IOMode::POPN)
+			return;
+
+		if (!(pressed & (1u << P1IO_BIND_CARD_INSERT)))
+			return;
+
+		// One button drives the whole cycle. The player pushes a card in; the reader draws it
+		// as soon as the game opens the slot, then the game itself ejects it (control 2) when
+		// it is done, so no separate eject action is needed.
+		if (s_popn_reader.card_inside)
+		{
+			Host::AddKeyedOSDMessage("Python1PopnCard", "A card is already in the reader.", 3.0f);
+			return;
+		}
+
+		s_popn_reader.insert_pending = true;
+		if (s_popn_reader.shutter_open)
+			InsertPopnCard();
+		else
+			Host::AddKeyedOSDMessage("Python1PopnCard", "Card ready. It will be drawn in when the game asks for one.", 3.0f);
+	}
+
+	void QueuePopnReaderDeviceReply(u8 node, u8 command, u8 field4, const u8* data, u32 data_size)
+	{
+		std::vector<u8> reply;
+		reply.reserve(6 + data_size);
+		reply.push_back(0xaa);
+		reply.push_back(0x01);
+		reply.push_back(node);
+		reply.push_back(command);
+		reply.push_back(field4);
+		reply.insert(reply.end(), data, data + data_size);
+		reply.push_back(CalculateAcioChecksum(reply.data(), static_cast<u32>(reply.size())));
+		QueueUartBytes(reply.data(), static_cast<u32>(reply.size()));
+	}
+
+	void QueuePopnReaderByteReply(u8 node, u8 command, u8 value)
+	{
+		QueuePopnReaderDeviceReply(node, command, 0x01, &value, 1);
+	}
+
+	void QueuePopnReaderBusReply(u8 header, u8 node, u8 command, const u8* data, u32 data_size)
+	{
+		std::vector<u8> reply;
+		reply.reserve(5 + data_size);
+		reply.push_back(0xaa);
+		reply.push_back(header);
+		reply.push_back(node);
+		reply.push_back(command);
+		reply.insert(reply.end(), data, data + data_size);
+		reply.push_back(CalculateAcioChecksum(reply.data(), static_cast<u32>(reply.size())));
+		QueueUartBytes(reply.data(), static_cast<u32>(reply.size()));
+	}
+
+	void QueuePopnReaderKeypadReply(u8 node, u8 command)
+	{
+		std::array<u8, POPN_KEYPAD_MAX_EVENTS_PER_POLL> events = {};
+		const u32 event_count = s_device ? s_device->PopPopnKeypadEvents(events.data(), static_cast<u32>(events.size())) : 0;
+		std::vector<u8> reply = {0xaa, 0x01, node, command};
+		if (event_count == 0)
+		{
+			reply.push_back(0x00);
+		}
+		else
+		{
+			u32 length_shift = 0;
+			while ((1u << length_shift) < event_count)
+				length_shift++;
+			reply.push_back(static_cast<u8>(0x11 + length_shift));
+			reply.push_back(static_cast<u8>(event_count));
+			reply.insert(reply.end(), events.begin(), events.begin() + event_count);
+			reply.insert(reply.end(), (1u << length_shift) - event_count, 0x00);
+		}
+		reply.push_back(CalculateAcioChecksum(reply.data(), static_cast<u32>(reply.size())));
+		QueueUartBytes(reply.data(), static_cast<u32>(reply.size()));
+	}
+
+	u8 RunPopnReaderControl(u8 op)
+	{
+		switch (op)
+		{
+			case POPN_READER_CONTROL_OPEN:
+				s_popn_reader.shutter_open = true;
+				s_popn_reader.read_ready = false;
+				if (s_popn_reader.insert_pending)
+					InsertPopnCard();
+				return 0x00;
+			case POPN_READER_CONTROL_EJECT:
+				if (s_popn_reader.card_inside)
+					Host::AddKeyedOSDMessage("Python1PopnCard", "Card ejected by the game.", 3.0f);
+				s_popn_reader.shutter_open = false;
+				s_popn_reader.card_inside = false;
+				s_popn_reader.read_ready = false;
+				s_popn_reader.write_buffer_loaded = false;
+				return 0x00;
+			case POPN_READER_CONTROL_READ:
+				if (!s_popn_reader.card_inside)
+					return 0x02;
+				s_popn_reader.read_ready = true;
+				return 0x00;
+			case POPN_READER_CONTROL_WRITE:
+				if (!s_popn_reader.card_inside)
+					return 0x02;
+				if (!s_popn_reader.write_buffer_loaded)
+					return 0xff;
+				s_popn_reader.card = s_popn_reader.write_buffer;
+				s_popn_reader.write_buffer_loaded = false;
+				SavePopnCard();
+				return 0x00;
+			default:
+				return 0x00;
+		}
+	}
+
+	void HandlePopnReaderDeviceCommand(const std::vector<u8>& bytes)
+	{
+		const u8 node = bytes[2];
+		const u8 command = bytes[3];
+		const u8* payload = bytes.data() + 5;
+		const u32 payload_size = static_cast<u32>(bytes.size()) - 6;
+		switch (command)
+		{
+			case 0x00:
+			case 0x01:
+			case 0x10:
+			case 0x11:
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+			case 0x12:
+				QueuePopnReaderByteReply(node, command, GetPopnReaderStatus());
+				break;
+			case 0x14:
+			case 0x15:
+				QueuePopnReaderByteReply(node, command, payload_size >= 1 ? RunPopnReaderControl(payload[0]) : 0xff);
+				break;
+			case 0x16:
+				s_popn_reader.write_buffer.fill(0);
+				std::copy_n(payload, std::min<u32>(payload_size, POPN_CARD_FILE_SIZE), s_popn_reader.write_buffer.begin());
+				s_popn_reader.write_buffer_loaded = true;
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+			case 0x18:
+			{
+				std::array<u8, POPN_CARD_READ_REPLY_DATA_SIZE> data = {};
+				data[0] = 0x18;
+				std::copy_n(s_popn_reader.card.begin(), POPN_CARD_RECORD_SIZE, data.begin() + POPN_CARD_READ_REPLY_RECORD_OFFSET);
+				QueuePopnReaderDeviceReply(node, command, data[0], data.data() + 1, static_cast<u32>(data.size() - 1));
+				break;
+			}
+			case 0x1e:
+			case 0x1f:
+				s_popn_reader.card = s_popn_reader.write_buffer;
+				s_popn_reader.write_buffer_loaded = false;
+				SavePopnCard();
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+			case 0x20:
+				QueuePopnReaderByteReply(node, command, 0x01);
+				break;
+			case 0x24:
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+			case 0x26:
+				QueuePopnReaderKeypadReply(node, command);
+				break;
+			default:
+				QueuePopnReaderByteReply(node, command, 0x00);
+				break;
+		}
+	}
+
+	std::string HexDump(const u8* data, u32 size)
+	{
+		std::string out;
+		for (u32 i = 0; i < size; i++)
+			out += StringUtil::StdStringFromFormat("%02x ", data[i]);
+		return out;
+	}
+
+	void HandlePopnReaderUartWriteInner(const std::vector<u8>& bytes)
+	{
+		// Each command/response on the RS-485 bus is one atomic transaction. If the game issues a
+		// new command, anything left unread from a previous reply is stale (it abandoned that read,
+		// e.g. on a retry), so drop it. Without this the FIFO builds a cross-command backlog that
+		// buries later replies (the reader read is polled far more often than it is drained).
+		s_uart_rx_fifo.clear();
+		QueueUartBytes(bytes.data(), static_cast<u32>(bytes.size()));
+		if (bytes.size() < 4 || bytes[0] != 0xaa)
+			return;
+
+		if (bytes[1] == 0xaa)
+		{
+			if (bytes[2] == 0xaa && bytes[3] == 0x55)
+				return;
+			if (bytes.size() < 6)
+				return;
+
+			const u8 node = bytes[2];
+			const u8 command = bytes[3];
+			if (node == 0x00 && command == 0x01)
+			{
+				const u8 count[] = {0x01, 0x01};
+				QueuePopnReaderBusReply(0xaa, 0x00, 0x01, count, sizeof(count));
+			}
+			else if (command == 0x02)
+			{
+				std::vector<u8> data = {0x05};
+				data.insert(data.end(), std::begin(POPN_READER_PRODUCT_REPLY_TAIL), std::end(POPN_READER_PRODUCT_REPLY_TAIL));
+				QueuePopnReaderBusReply(0xa5, node, command, data.data(), static_cast<u32>(data.size()));
+			}
+			else if (command == 0x03)
+			{
+				const u8 started[] = {0x01, 0x00};
+				QueuePopnReaderBusReply(0xa5, node, command, started, sizeof(started));
+			}
+			return;
+		}
+
+		if (bytes[1] == 0x00 && bytes.size() >= 6)
+			HandlePopnReaderDeviceCommand(bytes);
+	}
+
+	void HandlePopnReaderUartWrite(const std::vector<u8>& bytes)
+	{
+		const size_t rx_before = s_uart_rx_fifo.size();
+		HandlePopnReaderUartWriteInner(bytes);
+		if (FW_VERBOSE_LOGS && (bytes.size() < 4 || bytes[0] != 0xaa || bytes[1] != 0xaa || bytes[2] != 0xaa))
+			DevCon.WriteLn("POPN READER: w %s| rx %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str(),
+				s_uart_rx_fifo.size() > rx_before ? HexDump(s_uart_rx_fifo.data() + rx_before, static_cast<u32>(s_uart_rx_fifo.size() - rx_before)).c_str() : "(none)");
+	}
+
 	void HandleAcioUartWrite(const u32* payload, u32 payload_quads, u32 byte_count, bool extio_mode)
 	{
 		std::vector<u8> bytes;
@@ -846,6 +1414,11 @@ namespace
 				const u32 word = payload[2 + offset / sizeof(u32)];
 				bytes[offset] = static_cast<u8>(word >> (24 - ((offset & 3) * 8)));
 			}
+		}
+		if (GetPython1IOMode() == Python1IOMode::POPN)
+		{
+			HandlePopnReaderUartWrite(bytes);
+			return;
 		}
 		if (bytes.size() >= 4 && bytes[0] == 0xaa && bytes[1] == 0xaa && bytes[2] == 0xaa && bytes[3] == 0x55)
 		{
@@ -967,6 +1540,9 @@ namespace
 		const u32 byte_count = std::min<u32>(requested_bytes, static_cast<u32>(s_uart_rx_fifo.size()));
 		if (byte_count == 0)
 			return false;
+
+		if (FW_VERBOSE_LOGS && GetPython1IOMode() == Python1IOMode::POPN)
+			DevCon.WriteLn("POPN READER: r give=%u %s", byte_count, HexDump(s_uart_rx_fifo.data(), byte_count).c_str());
 
 		std::vector<u32> callback(2 + ((byte_count + 1) / 2));
 		callback[1] = (byte_count << 16) | s_uart_rx_fifo[0];
@@ -1171,6 +1747,71 @@ namespace
 		return key;
 	}
 
+	void BuildPopnDesKey(const u8* key, u8* transformed)
+	{
+		std::fill_n(transformed, DES_BLOCK_SIZE, static_cast<u8>(0));
+		for (const u8 position : DES_PERMUTED_CHOICE_1)
+		{
+			const u32 target = position - 1u;
+			const u32 source = target - (target >> 3);
+			if (((key[source >> 3] >> (~source & 7)) & 1) != 0)
+				transformed[target >> 3] |= static_cast<u8>(1u << (~target & 7));
+		}
+	}
+
+	void PopnDesBlock(const u8* key, const u8* input, u8* output, bool decrypt)
+	{
+		u8 transformed[DES_BLOCK_SIZE];
+		BuildPopnDesKey(key, transformed);
+
+		DesContext context;
+		desInit(&context, transformed, sizeof(transformed));
+		if (decrypt)
+			desDecryptBlock(&context, input, output);
+		else
+			desEncryptBlock(&context, input, output);
+	}
+
+	void BuildPopnSecuritySignature(const u8* id, u8* signature)
+	{
+		u8 key[DES_BLOCK_SIZE];
+		for (u32 index = 0; index < sizeof(key); index++)
+			key[index] = static_cast<u8>(POPN_SECURITY_AREA_KEY >> (index * 8));
+
+		u8 key_a[DES_BLOCK_SIZE];
+		u8 seed[DES_BLOCK_SIZE];
+		std::fill_n(key_a, sizeof(key_a), key[0]);
+		std::fill_n(seed, sizeof(seed), static_cast<u8>(key[7] ^ 0x55));
+
+		u8 key_b[DES_BLOCK_SIZE];
+		PopnDesBlock(key_a, seed, key_b, false);
+
+		u8 key_c[DES_BLOCK_SIZE];
+		for (u32 index = 0; index < sizeof(key_c); index++)
+			key_c[index] = static_cast<u8>(key_a[index] ^ key_b[index]);
+
+		u8 data[DES_BLOCK_SIZE];
+		std::copy_n(id, KONAMI_SECURITY_ID_SIZE, data);
+		data[6] = key[6];
+		data[7] = key[7];
+
+		u8 first[DES_BLOCK_SIZE];
+		u8 second[DES_BLOCK_SIZE];
+		u8 third[DES_BLOCK_SIZE];
+		PopnDesBlock(key_a, data, first, false);
+		PopnDesBlock(key_b, first, second, true);
+		PopnDesBlock(key_c, second, third, false);
+		std::copy_n(third, KONAMI_SECURITY_ID_SIZE, signature);
+	}
+
+	std::string BuildPopnPcbIdString(const std::string& prefix, const u8* rom)
+	{
+		std::string text = prefix;
+		for (const u8 rom_index : POPN_PCB_ID_ROM_ORDER)
+			text += StringUtil::StdStringFromFormat("%02X", rom[rom_index]);
+		return text;
+	}
+
 	void UpdateDallasKeyResponseFromBootrom()
 	{
 		SetDallasKeyResponseFromId(KONAMI_DEFAULT_DALLAS_ID);
@@ -1183,6 +1824,114 @@ namespace
 			SetDallasKeyResponseFromId(record);
 			return;
 		}
+	}
+
+	bool PatchPopnPcbIdPrefixInEeMemory(const std::string& prefix)
+	{
+		const std::string tail(POPN_PCB_ID_FORMAT_TAIL);
+		const u32 tail_size = static_cast<u32>(tail.size());
+		std::vector<u8> window(POPN_EE_SCAN_CHUNK + tail_size + POPN_PCB_ID_PREFIX_LENGTH);
+
+		for (u32 base = POPN_EE_SCAN_BASE; base < POPN_EE_SCAN_BASE + POPN_EE_SCAN_SIZE; base += POPN_EE_SCAN_CHUNK)
+		{
+			const u32 size = POPN_EE_SCAN_CHUNK + tail_size;
+			if (!ReadEeMemory(base, window.data(), size))
+				continue;
+
+			for (u32 offset = 0; offset < POPN_EE_SCAN_CHUNK; offset++)
+			{
+				if (std::memcmp(window.data() + offset, tail.c_str(), tail_size) != 0)
+					continue;
+
+				const u32 tail_address = base + offset;
+				if (tail_address < POPN_EE_SCAN_BASE + POPN_PCB_ID_PREFIX_LENGTH)
+					continue;
+
+				u8 current[POPN_PCB_ID_PREFIX_LENGTH] = {};
+				const u32 prefix_address = tail_address - POPN_PCB_ID_PREFIX_LENGTH;
+				if (!ReadEeMemory(prefix_address, current, sizeof(current)))
+					continue;
+
+				bool looks_like_prefix = true;
+				for (const u8 value : current)
+					looks_like_prefix &= std::isxdigit(value) != 0;
+
+				if (!looks_like_prefix)
+					continue;
+
+				if (std::memcmp(current, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH) == 0)
+					return true;
+
+				if (!WriteEeMemory(prefix_address, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH))
+					return false;
+
+				Console.WriteLn("FW HLE: patched pop'n PCB ID prefix at 0x%08x to %s", prefix_address, prefix.c_str());
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void ApplyPopnPcbId()
+	{
+		if (GetPython1IOMode() != Python1IOMode::POPN)
+			return;
+
+		const std::string setting = GetPython1GamePath("PcbId", "PCSX2_FW_POPN_PCB_ID");
+		std::string hex;
+		for (const char character : setting)
+		{
+			if (std::isxdigit(static_cast<unsigned char>(character)))
+				hex += character;
+		}
+
+		if (hex.empty())
+			return;
+
+		if (hex.size() != POPN_PCB_ID_LENGTH)
+		{
+			Console.Error("FW HLE: PcbId '%s' is not %u hex digits, ignoring", setting.c_str(), POPN_PCB_ID_LENGTH);
+			return;
+		}
+
+		std::array<u8, DALLAS_DONGLE_SERIAL_SIZE> rom = {};
+		for (u32 index = 0; index < DALLAS_DONGLE_SERIAL_SIZE; index++)
+		{
+			const std::optional<u32> value =
+				StringUtil::FromChars<u32>(std::string_view(hex).substr(POPN_PCB_ID_ROM_OFFSET + index * 2, 2), 16);
+			if (!value.has_value())
+			{
+				Console.Error("FW HLE: PcbId '%s' is not valid hex, ignoring", setting.c_str());
+				return;
+			}
+
+			rom[POPN_PCB_ID_ROM_ORDER[index]] = static_cast<u8>(value.value());
+		}
+
+		const std::string prefix = hex.substr(0, POPN_PCB_ID_PREFIX_LENGTH);
+		if (prefix != s_popn_pcb_id_prefix)
+		{
+			s_popn_pcb_id_prefix = prefix;
+			s_popn_pcb_id_prefix_patched = false;
+		}
+
+		std::copy(rom.begin(), rom.end(), s_dallas_dongle_slots[0].data());
+		s_dallas_dongle_loaded[0] = true;
+
+		for (u32 offset = 0xf000; offset <= BOOTROM_SIZE - 0x20; offset += 0x10)
+		{
+			u8* record = s_bootrom + offset;
+			if (record[0x10] != 'G' || record[0x1a] != 'J' || record[0x1b] != 'A')
+				continue;
+
+			std::copy_n(rom.data() + 1, KONAMI_SECURITY_ID_SIZE, record);
+			BuildPopnSecuritySignature(record, record + KONAMI_SECURITY_SIGNATURE_OFFSET);
+			Console.WriteLn("FW HLE: pop'n PCB ID set to %s", BuildPopnPcbIdString(prefix, rom.data()).c_str());
+			return;
+		}
+
+		Console.Error("FW HLE: no security record found in the boot ROM, PcbId ignored");
 	}
 
 	bool EnsureParentDirectoryForFile(const std::string& path)
@@ -1289,6 +2038,8 @@ namespace
 			UpdateDallasKeyResponseFromBootrom();
 			s_dallas_dongle_loaded[0] = true;
 		}
+
+		ApplyPopnPcbId();
 	}
 
 	void BuildGeneratedBootrom()
@@ -2136,6 +2887,48 @@ namespace
 		SchedulePendingSectorStatusEvent();
 	}
 
+	void SchedulePopnUartStream()
+	{
+		if (!s_host)
+			return;
+		const u64 delta = std::max<u64>(1, PSXCLK / 4000); // ~0.25 ms between chunks.
+		s_popn_uart_stream_cycle = GetCurrentCycle() + delta;
+		s_host->ScheduleEvent(delta);
+	}
+
+	void ServicePopnUartStream()
+	{
+		if (s_popn_uart_stream_cycle == 0)
+			return;
+
+		if (s_uart_rx_fifo.empty() || GetPython1IOMode() != Python1IOMode::POPN)
+		{
+			s_popn_uart_stream_cycle = 0;
+			return;
+		}
+
+		if (GetCurrentCycle() < s_popn_uart_stream_cycle)
+		{
+			if (s_host)
+				s_host->ScheduleEvent(s_popn_uart_stream_cycle - GetCurrentCycle());
+			return;
+		}
+
+		// Push the next chunk of the pending reply. This byte delivery fires the reader driver's
+		// "data arrived" event so it keeps reading instead of stalling; repeat until drained.
+		if (QueueUartReadData(UART_CALLBACK_BYTE_LIMIT))
+		{
+			QueuePendingDbufQuadWrite(0xfffe, KONAMI_UART_STATUS_OFFSET, ByteSwap32(2));
+			QueuePendingDbufQuadWrite(0xfffe, KONAMI_UART_STATUS_OFFSET, ByteSwap32(1));
+			FlushPendingDbufR0RxPacket();
+		}
+
+		if (s_uart_rx_fifo.empty())
+			s_popn_uart_stream_cycle = 0;
+		else
+			SchedulePopnUartStream();
+	}
+
 	bool PerformFireWireIopDmaWrite(u32 dest, const u8* data, size_t size)
 	{
 		// HLE the receive-side DMA effect of an async FireWire block write into IOP RAM.
@@ -2366,6 +3159,9 @@ namespace
 		if (subop == 0)
 		{
 			const std::optional<u32> slot = GetDallasDongleSlotForKey(key);
+			if (!s_popn_pcb_id_prefix_patched && !s_popn_pcb_id_prefix.empty())
+				s_popn_pcb_id_prefix_patched = PatchPopnPcbIdPrefixInEeMemory(s_popn_pcb_id_prefix);
+
 			if (slot.has_value() && s_dallas_dongle_loaded[*slot])
 			{
 				std::array<u32, 3> response = BuildDallasDongleSerialResponse(*slot);
@@ -2480,6 +3276,15 @@ namespace
 		QueuePendingDbufQuadWrite(0xfffe, KONAMI_UART_STATUS_OFFSET, status);
 		if ((extio_mode && subop == 2) || queued_read_data)
 			QueuePendingDbufQuadWrite(0xfffe, KONAMI_UART_STATUS_OFFSET, ByteSwap32(1));
+
+		// A large reply (e.g. the 135-byte card record) is drained by the reader driver in
+		// <=64-byte chunks, and between chunks it waits on a "more data arrived" event. Each byte
+		// delivery below fires that event, so on real hardware the reply streaming in over the
+		// 38400-baud line keeps it firing. Here the reply is ready at once, so keep pushing the
+		// rest autonomously instead of only answering the driver's polls (which stall and make it
+		// re-send the whole command).
+		if (queued_read_data && !s_uart_rx_fifo.empty())
+			SchedulePopnUartStream();
 		return true;
 	}
 
@@ -2580,6 +3385,105 @@ namespace
 		return true;
 	}
 
+	std::string ParsePython1ServerHost(const std::string& url)
+	{
+		std::string host = url;
+		const size_t scheme_end = host.find("://");
+		if (scheme_end != std::string::npos)
+			host.erase(0, scheme_end + 3);
+
+		const size_t path_start = host.find('/');
+		if (path_start != std::string::npos)
+			host.erase(path_start);
+
+		const size_t port_start = host.rfind(':');
+		if (port_start != std::string::npos)
+			host.erase(port_start);
+
+		return host;
+	}
+
+	bool ResolvePython1ServerAddress(const std::string& host, std::array<u8, 4>* address)
+	{
+		if (host.empty())
+			return false;
+
+#ifdef _WIN32
+		static std::once_flag winsock_once;
+		std::call_once(winsock_once, []() {
+			WSADATA wsa_data;
+			WSAStartup(MAKEWORD(2, 2), &wsa_data);
+		});
+#endif
+
+		addrinfo hints = {};
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+
+		addrinfo* results = nullptr;
+		if (getaddrinfo(host.c_str(), nullptr, &hints, &results) != 0 || results == nullptr)
+			return false;
+
+		const sockaddr_in* resolved = reinterpret_cast<const sockaddr_in*>(results->ai_addr);
+		std::memcpy(address->data(), &resolved->sin_addr, address->size());
+		freeaddrinfo(results);
+		return true;
+	}
+
+	u16 ParsePython1ServerPort(const std::string& url)
+	{
+		std::string authority = url;
+		const size_t scheme_end = authority.find("://");
+		if (scheme_end != std::string::npos)
+			authority.erase(0, scheme_end + 3);
+
+		const size_t path_start = authority.find('/');
+		if (path_start != std::string::npos)
+			authority.erase(path_start);
+
+		const size_t port_start = authority.rfind(':');
+		if (port_start == std::string::npos)
+			return 80;
+
+		const std::optional<u16> port = StringUtil::FromChars<u16>(authority.substr(port_start + 1));
+		return port.value_or(80);
+	}
+
+	bool TryGetPython1ServerAddress(std::array<u8, 4>* address)
+	{
+		const std::string url = GetPython1GamePath("ServerUrl", "PCSX2_FW_SERVER_URL");
+		if (url.empty())
+			return false;
+
+		if (url != s_net_server_url)
+		{
+			s_net_server_url = url;
+			s_net_server_port = ParsePython1ServerPort(url);
+			s_net_server_address_valid = ResolvePython1ServerAddress(ParsePython1ServerHost(url), &s_net_server_address);
+			if (s_net_server_address_valid)
+			{
+				Console.WriteLn("FW NET: server '%s' resolved to %u.%u.%u.%u:%u", url.c_str(), s_net_server_address[0],
+					s_net_server_address[1], s_net_server_address[2], s_net_server_address[3], s_net_server_port);
+			}
+			else
+			{
+				Console.Error("FW NET: could not resolve server '%s', staying offline", url.c_str());
+			}
+		}
+
+		if (!s_net_server_address_valid)
+			return false;
+
+		*address = s_net_server_address;
+		return true;
+	}
+
+	bool IsPython1NetworkOnline()
+	{
+		std::array<u8, 4> address = {};
+		return TryGetPython1ServerAddress(&address);
+	}
+
 	void BuildOfflineConfiguredIp()
 	{
 		u32 network_id = s_bbsram[KONAMI_BBSRAM_NETWORK_ID_OFFSET];
@@ -2594,35 +3498,28 @@ namespace
 
 	bool TryGetNetProperty(u32 property, u32 requested_bytes, const u8** response, u32* response_bytes)
 	{
+		const bool online = IsPython1NetworkOnline();
 		const u8* data = nullptr;
 		u32 data_bytes = 0;
 
 		switch (property)
 		{
 			case 0x101:
-				if (KONAMI_NET_FORCE_OFFLINE)
-				{
-					BuildOfflineConfiguredIp();
-					data = s_net_property_response.data();
-					data_bytes = sizeof(KONAMI_NET_OFFLINE_IP_ADDRESS);
-				}
-				else
-				{
-					data = KONAMI_NET_IP_ADDRESS;
-					data_bytes = sizeof(KONAMI_NET_IP_ADDRESS);
-				}
+				BuildOfflineConfiguredIp();
+				data = s_net_property_response.data();
+				data_bytes = sizeof(KONAMI_NET_OFFLINE_IP_ADDRESS);
 				break;
 			case 1:
 				data = KONAMI_NET_SUBNET_MASK;
 				data_bytes = sizeof(KONAMI_NET_SUBNET_MASK);
 				break;
 			case 3:
-				data = KONAMI_NET_FORCE_OFFLINE ? KONAMI_NET_OFFLINE_GATEWAY : KONAMI_NET_GATEWAY;
-				data_bytes = KONAMI_NET_FORCE_OFFLINE ? sizeof(KONAMI_NET_OFFLINE_GATEWAY) : sizeof(KONAMI_NET_GATEWAY);
+				data = online ? KONAMI_NET_ONLINE_GATEWAY : KONAMI_NET_OFFLINE_GATEWAY;
+				data_bytes = online ? sizeof(KONAMI_NET_ONLINE_GATEWAY) : sizeof(KONAMI_NET_OFFLINE_GATEWAY);
 				break;
 			case 6:
-				data = KONAMI_NET_FORCE_OFFLINE ? KONAMI_NET_OFFLINE_DNS : KONAMI_NET_PRIMARY_DNS;
-				data_bytes = KONAMI_NET_FORCE_OFFLINE ? sizeof(KONAMI_NET_OFFLINE_DNS) : sizeof(KONAMI_NET_PRIMARY_DNS);
+				data = online ? KONAMI_NET_ONLINE_GATEWAY : KONAMI_NET_OFFLINE_DNS;
+				data_bytes = online ? sizeof(KONAMI_NET_ONLINE_GATEWAY) : sizeof(KONAMI_NET_OFFLINE_DNS);
 				break;
 			case 0xf:
 				data = KONAMI_NET_MACHINE_ID;
@@ -2643,6 +3540,147 @@ namespace
 		*response_bytes = std::min(requested_bytes, data_bytes);
 		*response = data;
 		return true;
+	}
+
+	void CloseNetChannelSocket(u32 channel)
+	{
+		Python1NetSocket& socket_state = s_net_sockets[channel];
+		if (socket_state.handle != NET_INVALID_SOCKET)
+		{
+#ifdef _WIN32
+			closesocket(socket_state.handle);
+#else
+			close(socket_state.handle);
+#endif
+			if (FW_NET_LOGS)
+				Console.WriteLn("FW NET: closed host socket channel=%u", channel);
+		}
+
+		socket_state.handle = NET_INVALID_SOCKET;
+		socket_state.is_stream = false;
+		socket_state.is_raw = false;
+	}
+
+	void SetNetSocketTimeout(NetSocket handle, u32 milliseconds)
+	{
+#ifdef _WIN32
+		const DWORD timeout = milliseconds;
+		setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+		setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+		timeval timeout = {};
+		timeout.tv_sec = static_cast<time_t>(milliseconds / 1000);
+		timeout.tv_usec = static_cast<suseconds_t>((milliseconds % 1000) * 1000);
+		setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+		setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+	}
+
+	bool ConnectNetChannelToServer(u32 channel)
+	{
+		if (!s_net_sockets[channel].is_stream)
+			return false;
+
+		std::array<u8, 4> address = {};
+		if (!TryGetPython1ServerAddress(&address))
+			return false;
+
+		const bool is_stream = s_net_sockets[channel].is_stream;
+		CloseNetChannelSocket(channel);
+		s_net_sockets[channel].is_stream = is_stream;
+
+		const NetSocket handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (handle == NET_INVALID_SOCKET)
+			return false;
+
+		SetNetSocketTimeout(handle, KONAMI_NET_SOCKET_TIMEOUT_MS);
+
+		sockaddr_in target = {};
+		target.sin_family = AF_INET;
+		target.sin_port = htons(s_net_server_port);
+		std::memcpy(&target.sin_addr, address.data(), address.size());
+
+		if (connect(handle, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) != 0)
+		{
+			Console.Error("FW NET: connect to %u.%u.%u.%u:%u failed", address[0], address[1], address[2], address[3],
+				s_net_server_port);
+#ifdef _WIN32
+			closesocket(handle);
+#else
+			close(handle);
+#endif
+			return false;
+		}
+
+		s_net_sockets[channel].handle = handle;
+		s_net_sockets[channel].is_stream = true;
+		Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, address[0], address[1], address[2],
+			address[3], s_net_server_port);
+		return true;
+	}
+
+	void LogNetBufferText(const u8* buffer, u32 byte_count)
+	{
+		std::string text;
+		text.reserve(byte_count);
+		for (u32 index = 0; index < byte_count; index++)
+		{
+			const u8 value = buffer[index];
+			text += (value >= 0x20 && value < 0x7f) ? static_cast<char>(value) : (value == 0x0a ? static_cast<char>(0x0a) : static_cast<char>(0x2e));
+		}
+
+		Console.WriteLn("%s", text.c_str());
+	}
+
+	bool TransferNetChannelStream(u32 channel, bool sending, u32 address, u32 byte_count, u32* transferred)
+	{
+		const NetSocket handle = s_net_sockets[channel].handle;
+		if (handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
+			return false;
+
+		std::vector<u8> buffer(byte_count);
+		if (sending)
+		{
+			if (!ReadIopMemory(address, buffer.data(), byte_count))
+				return false;
+
+			const int sent = send(handle, reinterpret_cast<const char*>(buffer.data()), static_cast<int>(byte_count), 0);
+			if (sent <= 0)
+			{
+				Console.Error("FW NET: send failed channel=%u bytes=%u", channel, byte_count);
+				return false;
+			}
+
+			*transferred = static_cast<u32>(sent);
+			if (FW_NET_LOGS)
+				Console.WriteLn("FW NET: sent channel=%u bytes=%u", channel, *transferred);
+			return true;
+		}
+
+		const int received = recv(handle, reinterpret_cast<char*>(buffer.data()), static_cast<int>(byte_count), 0);
+		if (received < 0)
+		{
+			Console.Error("FW NET: recv failed channel=%u", channel);
+			return false;
+		}
+
+		*transferred = static_cast<u32>(received);
+		if (received > 0)
+			QueuePendingDbufByteWriteChunked(0x1000, address, buffer.data(), *transferred);
+
+		if (FW_NET_LOGS)
+		{
+			Console.WriteLn("FW NET: received channel=%u bytes=%u", channel, *transferred);
+			if (*transferred != 0)
+				LogNetBufferText(buffer.data(), *transferred);
+		}
+		return true;
+	}
+
+	u32 PackNetAddress(const u8* address)
+	{
+		return static_cast<u32>(address[0]) | (static_cast<u32>(address[1]) << 8) |
+			   (static_cast<u32>(address[2]) << 16) | (static_cast<u32>(address[3]) << 24);
 	}
 
 	u16 ReadBe16(const u8* data)
@@ -2689,6 +3727,10 @@ namespace
 
 	bool BuildDnsPayloadResponse(const u8* dns, u32 dns_bytes, std::vector<u8>* response)
 	{
+		std::array<u8, 4> server_address = {};
+		if (!TryGetPython1ServerAddress(&server_address))
+			return false;
+
 		if (dns_bytes < 12 || ReadBe16(dns + 4) == 0)
 			return false;
 
@@ -2720,7 +3762,13 @@ namespace
 		WriteBe16(*response, 1);
 		WriteBe32(*response, 60);
 		WriteBe16(*response, 4);
-		WriteBe32(*response, KONAMI_NET_GATEWAY[0] << 24 | KONAMI_NET_GATEWAY[1] << 16 | KONAMI_NET_GATEWAY[2] << 8 | KONAMI_NET_GATEWAY[3]);
+		WriteBe32(*response, server_address[0] << 24 | server_address[1] << 16 | server_address[2] << 8 | server_address[3]);
+
+		if (FW_NET_LOGS)
+		{
+			Console.WriteLn("FW NET: DNS answer %u.%u.%u.%u", server_address[0], server_address[1], server_address[2],
+				server_address[3]);
+		}
 		return true;
 	}
 
@@ -2785,11 +3833,41 @@ namespace
 		return true;
 	}
 
+	bool BuildIcmpEchoReply(const u8* request, u32 request_bytes, u32 peer_ip, std::vector<u8>* response)
+	{
+		if (request_bytes < 8 || request[0] != ICMP_ECHO_REQUEST)
+			return false;
+
+		std::vector<u8> icmp(request, request + request_bytes);
+		icmp[0] = ICMP_ECHO_REPLY;
+		icmp[2] = 0;
+		icmp[3] = 0;
+		const u16 icmp_checksum = OnesComplementSum(icmp.data(), static_cast<u32>(icmp.size()));
+		icmp[2] = static_cast<u8>(icmp_checksum >> 8);
+		icmp[3] = static_cast<u8>(icmp_checksum);
+
+		const u16 total_bytes = static_cast<u16>(20 + icmp.size());
+		response->clear();
+		response->reserve(total_bytes);
+		response->push_back(0x45);
+		response->push_back(0x00);
+		WriteBe16(*response, total_bytes);
+		WriteBe16(*response, 0);
+		WriteBe16(*response, 0);
+		response->push_back(64);
+		response->push_back(IP_PROTOCOL_ICMP);
+		WriteBe16(*response, 0);
+		WriteBe32(*response, peer_ip);
+		WriteBe32(*response, PackNetAddress(s_net_property_response.data()));
+		const u16 ip_checksum = OnesComplementSum(response->data(), 20);
+		(*response)[10] = static_cast<u8>(ip_checksum >> 8);
+		(*response)[11] = static_cast<u8>(ip_checksum);
+		response->insert(response->end(), icmp.begin(), icmp.end());
+		return true;
+	}
+
 	void MaybeQueueNetReply(u32 channel, const u32* payload, u32 payload_quads)
 	{
-		if (KONAMI_NET_FORCE_OFFLINE)
-			return;
-
 		if (channel >= KONAMI_NET_CHANNEL_COUNT || payload_quads < 4 || payload[3] == 0)
 			return;
 
@@ -2802,16 +3880,66 @@ namespace
 		if (!ReadIopMemory(data_address, request.data(), byte_count))
 			return;
 
+		const u32 dns_server_ip = PackNetAddress(KONAMI_NET_ONLINE_GATEWAY);
 		std::vector<u8> response;
-		if (BuildDnsResponsePacket(request.data(), byte_count, 0xc0a83201, 0xc0a83202, &response) ||
+		if (s_net_sockets[channel].is_raw)
+		{
+			const u32 peer_ip = payload_quads >= 6 ? payload[5] : dns_server_ip;
+			if (BuildIcmpEchoReply(request.data(), byte_count, peer_ip, &response))
+			{
+				PendingNetPacket packet;
+				packet.data = std::move(response);
+				packet.source_ip = ByteSwap32(peer_ip);
+				packet.source_port = 0;
+				s_net_rx_packets[channel].push_back(std::move(packet));
+				if (FW_NET_LOGS)
+					Console.WriteLn("FW NET: queued ICMP echo reply channel=%u bytes=%u", channel, byte_count);
+			}
+			return;
+		}
+
+		if (BuildDnsResponsePacket(request.data(), byte_count, ByteSwap32(dns_server_ip), ByteSwap32(PackNetAddress(s_net_property_response.data())), &response) ||
 			(payload_quads >= 5 && (payload[4] & 0xffff) == 53 && BuildDnsPayloadResponse(request.data(), byte_count, &response)))
 		{
 			PendingNetPacket packet;
 			packet.data = std::move(response);
-			packet.source_ip = 0x0132a8c0;
+			packet.source_ip = dns_server_ip;
 			packet.source_port = 53;
 			s_net_rx_packets[channel].push_back(std::move(packet));
 		}
+	}
+
+	std::string FormatNetPayload(const u32* payload, u32 payload_quads)
+	{
+		std::string text;
+		for (u32 index = 0; index < payload_quads; index++)
+			text += StringUtil::StdStringFromFormat("%s[%u]=0x%08x", index == 0 ? "" : " ", index, payload[index]);
+		return text;
+	}
+
+	void LogNetCommand(const char* verdict, u32 channel, u32 command, const u32* payload, u32 payload_quads)
+	{
+		if (!FW_NET_LOGS)
+			return;
+
+		Console.WriteLn("FW NET: %s channel=%u command=0x%02x quads=%u %s", verdict, channel, command, payload_quads,
+			FormatNetPayload(payload, payload_quads).c_str());
+	}
+
+	void LogNetOutboundBuffer(u32 channel, u32 command, u32 address, u32 byte_count)
+	{
+		if (address == 0 || byte_count == 0 || byte_count > 0x2000)
+			return;
+
+		std::vector<u8> buffer(byte_count);
+		if (!ReadIopMemory(address, buffer.data(), byte_count))
+			return;
+
+		std::string text;
+		text.reserve(byte_count);
+		for (const u8 value : buffer)
+			text += (value >= 0x20 && value < 0x7f) ? static_cast<char>(value) : (value == 0x0a ? static_cast<char>(0x0a) : static_cast<char>(0x2e));
+		Console.WriteLn("FW NET: out channel=%u command=0x%02x bytes=%u\n%s", channel, command, byte_count, text.c_str());
 	}
 
 	bool HleNetCommand(u32 command_offset, const u32* payload, u32 payload_quads)
@@ -2828,6 +3956,7 @@ namespace
 			return false;
 
 		const u32 command = payload[0];
+		LogNetCommand("command", channel, command, payload, payload_quads);
 		switch (command)
 		{
 			case 0:
@@ -2839,6 +3968,7 @@ namespace
 			case 7:
 			case 0x0b:
 			case 0x0c:
+			case 0x0f:
 			case 0x13:
 			case 0x14:
 			case 0x15:
@@ -2848,6 +3978,7 @@ namespace
 			case 0x1e:
 				break;
 			default:
+				LogNetCommand("UNHANDLED", channel, command, payload, payload_quads);
 				return false;
 		}
 
@@ -2858,9 +3989,23 @@ namespace
 		if (command == 0x1e)
 		{
 			if (payload_quads < 4 || !TryGetNetProperty(payload[1], payload[3], &property_response, &property_response_bytes))
+			{
+				if (FW_NET_LOGS)
+					Console.WriteLn("FW NET: property REFUSED channel=%u property=0x%x requested=0x%x", channel,
+						payload_quads >= 2 ? payload[1] : 0, payload_quads >= 4 ? payload[3] : 0);
 				return false;
+			}
 
-			QueuePendingDbufByteWrite(0x1000, payload[2], property_response, property_response_bytes);
+			if (FW_NET_LOGS)
+			{
+				std::string bytes;
+				for (u32 index = 0; index < property_response_bytes; index++)
+					bytes += StringUtil::StdStringFromFormat("%s%02x", index == 0 ? "" : " ", property_response[index]);
+				Console.WriteLn("FW NET: property 0x%x channel=%u served=%u %s", payload[1], channel,
+					property_response_bytes, bytes.c_str());
+			}
+
+			QueuePendingDbufByteWriteChunked(0x1000, payload[2], property_response, property_response_bytes);
 		}
 		else if ((command == 0x14 || command == 0x15) && payload_quads < 4)
 		{
@@ -2870,6 +4015,33 @@ namespace
 		{
 			MaybeQueueNetReply(channel, payload, payload_quads);
 		}
+
+		if (command == 0x0b && payload_quads >= 3)
+		{
+			CloseNetChannelSocket(channel);
+			s_net_sockets[channel].is_stream = payload[2] == KONAMI_NET_SOCKET_TYPE_STREAM;
+			s_net_sockets[channel].is_raw = payload[2] == KONAMI_NET_SOCKET_TYPE_RAW;
+		}
+		else if (command == 0x1d)
+		{
+			CloseNetChannelSocket(channel);
+		}
+
+		bool stream_connected = false;
+		if (command == 0x0f)
+			stream_connected = ConnectNetChannelToServer(channel);
+
+		u32 stream_transferred = 0;
+		bool stream_transfer_done = false;
+		if ((command == 0x14 || command == 0x16) && payload_quads >= 4 &&
+			s_net_sockets[channel].handle != NET_INVALID_SOCKET)
+		{
+			stream_transfer_done = TransferNetChannelStream(channel, command == 0x14, payload[2], payload[3],
+				&stream_transferred);
+		}
+
+		if (FW_NET_LOGS && (command == 0x14 || command == 0x15) && payload_quads >= 4)
+			LogNetOutboundBuffer(channel, command, payload[2], payload[3]);
 
 		PendingNetPacket received_packet;
 		bool has_received_packet = false;
@@ -2881,13 +4053,17 @@ namespace
 			if (received_packet.data.size() > max_bytes)
 				received_packet.data.resize(max_bytes);
 			if (!received_packet.data.empty())
-				QueuePendingDbufByteWrite(0x1000, payload[2], received_packet.data.data(), static_cast<u32>(received_packet.data.size()));
+				QueuePendingDbufByteWriteChunked(0x1000, payload[2], received_packet.data.data(), static_cast<u32>(received_packet.data.size()));
 			has_received_packet = true;
 		}
 
 		std::array<u32, 8> response = {};
 		if (command == 7)
 			response[1] = 1;
+		else if (command == 0x0f)
+			response[1] = stream_connected ? 0 : ByteSwap32(0xffffffff);
+		else if (stream_transfer_done)
+			response[1] = ByteSwap32(stream_transferred);
 		else if (command == 0x13 || command == 0x14 || command == 0x15)
 			response[1] = ByteSwap32(payload[3]);
 		else if ((command == 0x16 || command == 0x17) && has_received_packet)
@@ -2928,6 +4104,7 @@ namespace
 			s_p1io_coin_counters[0]++;
 		if (pressed & (1u << P1IO_BIND_COIN2))
 			s_p1io_coin_counters[1]++;
+		UpdatePopnCardReaderInputs(pressed);
 		s_last_p1io_bind_state = bind_state;
 		return bind_state_changed;
 	}
@@ -3187,6 +4364,9 @@ namespace
 		s_uart_rx_fifo.clear();
 		for (auto& packets : s_net_rx_packets)
 			packets.clear();
+		for (u32 channel = 0; channel < KONAMI_NET_CHANNEL_COUNT; channel++)
+			CloseNetChannelSocket(channel);
+		s_popn_pcb_id_prefix_patched = false;
 		s_net_property_response = {};
 		ResetFsciStream();
 		ResetSubboardAdpcmPlayback();
@@ -3201,6 +4381,8 @@ namespace
 		s_p1io_coin_counters[1] = 0;
 		s_pythonfs_formatted = false;
 		s_next_sector_read_ready_cycle = 0;
+		s_popn_uart_stream_cycle = 0;
+		ResetPopnCardReaderRuntimeState();
 	}
 
 	void DoPendingSectorStatusWriteState(PendingSectorStatusWrite& status, StateWrapper& sw)
@@ -3260,6 +4442,7 @@ namespace
 		LoadBbsram();
 		LoadDallasDongles();
 		LoadConfigRom();
+		LoadPopnCard();
 		SoftResetRuntimeState();
 		return true;
 	}
@@ -3295,9 +4478,116 @@ namespace
 		return TryHleKonamiCommand(offset, payload, payload_quads);
 	}
 
+	bool ReadEe32(u32 address, u32* value)
+	{
+		return ReadEeMemory(address, value, sizeof(*value));
+	}
+
+	std::string ReadEeString(u32 address)
+	{
+		std::string text;
+		for (u32 index = 0; index < POPN_EE_MAX_STRING; index++)
+		{
+			u8 character = 0;
+			if (!ReadEeMemory(address + index, &character, sizeof(character)) || character == 0)
+				break;
+			text += static_cast<char>(character);
+		}
+		return text;
+	}
+
+	void DumpPopnServiceRegistry()
+	{
+		u32 registry = 0;
+		if (!ReadEe32(POPN_EE_SERVICE_REGISTRY_PTR, &registry) || registry == 0)
+		{
+			Console.WriteLn("FW NET: service registry pointer is null");
+			return;
+		}
+
+		for (u32 slot = 0; slot < 2; slot++)
+		{
+			u32 arena = 0;
+			u32 generation = 0;
+			u32 locked = 0;
+			ReadEe32(registry + slot * 12, &arena);
+			ReadEe32(registry + slot * 12 + 4, &generation);
+			ReadEe32(registry + slot * 12 + 8, &locked);
+			if (arena == 0)
+				continue;
+
+			u32 base = 0;
+			u32 remaining = 0;
+			u32 count = 0;
+			ReadEe32(arena, &base);
+			ReadEe32(arena + 8, &remaining);
+			ReadEe32(arena + 12, &count);
+			Console.WriteLn("FW NET: registry slot=%u gen=%u locked=%u count=%u free=%u", slot, generation, locked,
+				count, remaining);
+
+			for (u32 index = 0; index < count && index < POPN_EE_MAX_REGISTRY_ENTRIES; index += 2)
+			{
+				u32 name_pointer = 0;
+				u32 url_pointer = 0;
+				ReadEe32(base + index * 4, &name_pointer);
+				ReadEe32(base + (index + 1) * 4, &url_pointer);
+				Console.WriteLn("FW NET:   [%u] %s = %s", index / 2, ReadEeString(name_pointer).c_str(),
+					ReadEeString(url_pointer).c_str());
+			}
+		}
+	}
+
+	void DumpPopnModuleList()
+	{
+		u32 node = 0;
+		if (!ReadEe32(POPN_EE_MODULE_LIST_PTR, &node))
+			return;
+
+		for (u32 index = 0; index < POPN_EE_MAX_REGISTRY_ENTRIES && node != 0; index++)
+		{
+			u32 name_pointer = 0;
+			u32 method_count = 0;
+			u32 next = 0;
+			ReadEe32(node, &name_pointer);
+			ReadEe32(node + 4, &next);
+			ReadEe32(node + 8, &method_count);
+			Console.WriteLn("FW NET: module '%s' methods=%u", ReadEeString(name_pointer).c_str(), method_count);
+			node = next;
+		}
+	}
+
+	void ServicePopnNetStateLog()
+	{
+		if (!FW_NET_LOGS || GetPython1IOMode() != Python1IOMode::POPN)
+			return;
+
+		u32 state = 0;
+		u32 status = 0;
+		if (!ReadEeMemory(POPN_EE_NET_STATE_ADDRESS, &state, sizeof(state)) ||
+			!ReadEeMemory(POPN_EE_NET_STATUS_ADDRESS, &status, sizeof(status)))
+		{
+			return;
+		}
+
+		if (state == s_popn_net_state && status == s_popn_net_status)
+			return;
+
+		const bool entered_ntp_stage = state == 7 && s_popn_net_state != 7;
+		s_popn_net_state = state;
+		s_popn_net_status = status;
+		Console.WriteLn("FW NET: eamuse net_init state=%u status=0x%08x", state, status);
+		if (entered_ntp_stage)
+		{
+			DumpPopnModuleList();
+			DumpPopnServiceRegistry();
+		}
+	}
+
 	void KonamiPython1Device::ServiceEvents()
 	{
 		ServicePendingSectorStatusWrites();
+		ServicePopnUartStream();
+		ServicePopnNetStateLog();
 	}
 
 	void KonamiPython1Device::MixAudio(s32* left, s32* right)
@@ -3323,6 +4613,13 @@ namespace
 		sw.Do(&s_fsci_stream_offset);
 		sw.Do(&s_pythonfs_formatted);
 		sw.Do(&s_uart_rx_fifo);
+		sw.Do(&s_popn_reader.shutter_open);
+		sw.Do(&s_popn_reader.card_inside);
+		sw.Do(&s_popn_reader.insert_pending);
+		sw.Do(&s_popn_reader.read_ready);
+		sw.Do(&s_popn_reader.write_buffer_loaded);
+		sw.Do(&s_popn_reader.card);
+		sw.Do(&s_popn_reader.write_buffer);
 		DoVectorState(s_pending_sector_status_writes, sw, DoPendingSectorStatusWriteState);
 		for (auto& packets : s_net_rx_packets)
 			DoVectorState(packets, sw, DoPendingNetPacketState);
@@ -3354,6 +4651,9 @@ namespace
 
 	float KonamiPython1Device::GetBindingValue(u32 bind_index) const
 	{
+		if (bind_index >= P1IO_POPN_KEYPAD_BIND_BASE && bind_index < P1IO_KEYBOARD_BIND_BASE)
+			return IsPopnKeypadKeyPressed(bind_index - P1IO_POPN_KEYPAD_BIND_BASE) ? 1.0f : 0.0f;
+
 		if (bind_index >= P1IO_BIND_COUNT)
 		{
 			if (!IsPython1P1IOSerialMode())
@@ -3402,6 +4702,12 @@ namespace
 			return;
 		}
 
+		if (bind_index >= P1IO_POPN_KEYPAD_BIND_BASE)
+		{
+			SetPopnKeypadKey(bind_index - P1IO_POPN_KEYPAD_BIND_BASE, value >= 0.5f);
+			return;
+		}
+
 		if (bind_index >= P1IO_BIND_COUNT)
 			return;
 
@@ -3415,9 +4721,49 @@ namespace
 	void KonamiPython1Device::ResetBindingState()
 	{
 		m_p1io_bind_state.store(0, std::memory_order_relaxed);
-		std::lock_guard lock(m_keyboard1_mutex);
-		m_keyboard1_pressed.fill(false);
-		m_keyboard1_events.clear();
+		{
+			std::lock_guard lock(m_keyboard1_mutex);
+			m_keyboard1_pressed.fill(false);
+			m_keyboard1_events.clear();
+		}
+		std::lock_guard keypad_lock(m_popn_keypad_mutex);
+		m_popn_keypad_pressed.fill(false);
+		m_popn_keypad_events.clear();
+	}
+
+	void KonamiPython1Device::SetPopnKeypadKey(u32 key, bool pressed)
+	{
+		if (key >= P1IO_POPN_KEYPAD_COUNT)
+			return;
+
+		std::lock_guard lock(m_popn_keypad_mutex);
+		if (m_popn_keypad_pressed[key] == pressed)
+			return;
+
+		m_popn_keypad_pressed[key] = pressed;
+		if (!pressed)
+			m_popn_keypad_events.push_back(0xf0);
+		m_popn_keypad_events.push_back(P1IO_POPN_KEYPAD_SCANCODES[key]);
+	}
+
+	bool KonamiPython1Device::IsPopnKeypadKeyPressed(u32 key) const
+	{
+		if (key >= P1IO_POPN_KEYPAD_COUNT)
+			return false;
+
+		std::lock_guard lock(m_popn_keypad_mutex);
+		return m_popn_keypad_pressed[key];
+	}
+
+	u32 KonamiPython1Device::PopPopnKeypadEvents(u8* dest, u32 max_events)
+	{
+		std::lock_guard lock(m_popn_keypad_mutex);
+		u32 count = std::min<u32>(max_events, static_cast<u32>(m_popn_keypad_events.size()));
+		if (count > 0 && count < m_popn_keypad_events.size() && m_popn_keypad_events[count - 1] == 0xf0)
+			count--;
+		std::copy_n(m_popn_keypad_events.begin(), count, dest);
+		m_popn_keypad_events.erase(m_popn_keypad_events.begin(), m_popn_keypad_events.begin() + count);
+		return count;
 	}
 
 	u32 KonamiPython1Device::GetBindingState() const

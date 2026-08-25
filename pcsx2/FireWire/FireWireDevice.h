@@ -21,6 +21,9 @@ namespace FireWire
 		virtual bool ReadIopMemory(u32 address, void* data, u32 size) = 0;
 		virtual bool WriteIopMemory(u32 address, const void* data, u32 size) = 0;
 
+		virtual bool ReadEeMemory(u32 address, void* data, u32 size) = 0;
+		virtual bool WriteEeMemory(u32 address, const void* data, u32 size) = 0;
+
 		virtual void QueueRemoteAsyncWriteQuad(u32 offset_high, u32 offset_low, u32 payload) = 0;
 		virtual void QueueRemoteAsyncWriteBlock(u32 offset_high, u32 offset_low, const u32* payload, u32 payload_quads) = 0;
 		virtual void QueueRemoteAsyncWriteBytes(u32 offset_high, u32 offset_low, const u8* payload, u32 byte_count) = 0;

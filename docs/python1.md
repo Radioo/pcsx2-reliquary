@@ -18,6 +18,8 @@ InternalDonglePath=popn14/ds2430.u3
 ExternalDonglePath=popn14/ds2430_black_gnf14jab.u3
 MemoryCardDonglePath=popn14/kn00002.ps2
 MemoryCardIdPath=popn14/kn00002.id
+CardFilePath=popn14/card.bin
+CardNumber=0000000000000001
 IoMode=POPN
 ```
 
@@ -41,6 +43,8 @@ Use either `HddImagePath` or `CfImagePath` for normal game media. A descriptor m
 | `MemoryCardDonglePath` | Yes      | Raw PS2 memory-card dongle image including ECC/spare data. It is assigned to memory-card slot 1.                                                                                                   |
 | `MemoryCardIdPath`     | Yes      | Card ID/key data used for card-bound KELF auth.                                                                                                                                                    |
 | `IoMode`               | No       | P1IO protocol/input profile. Defaults to `JVS`.                                                                                                                                                    |
+| `CardFilePath`         | No       | Magnetic card image for the pop'n card reader (128 bytes, created as a fresh card if missing). Defaults to `python1_popn_card.bin` in the memory card folder. Only used with `IoMode=POPN`.                           |
+| `CardNumber`           | No       | 16 hex digits for the pop'n card reader. When set, the emulated card is a used card carrying this id; blank generates a fresh new card. Only used with `IoMode=POPN`.                                          |
 
 ## I/O modes
 

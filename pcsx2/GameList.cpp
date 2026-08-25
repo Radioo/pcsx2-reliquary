@@ -621,6 +621,9 @@ bool GameList::GetPython1ListEntry(const std::string& path, GameList::Entry* ent
 	const std::string external_dongle_path = GetRelativeGameIniPath(path, *new_interface, "ExternalDonglePath");
 	const std::string memory_card_dongle_path = GetRelativeGameIniPath(path, *new_interface, "MemoryCardDonglePath");
 	const std::string memory_card_id_path = GetRelativeGameIniPath(path, *new_interface, "MemoryCardIdPath");
+	const std::string card_number = new_interface->GetStringValue("Game", "CardNumber");
+	const std::string server_url = new_interface->GetStringValue("Game", "ServerUrl");
+	const std::string pcb_id = new_interface->GetStringValue("Game", "PcbId");
 	std::string io_mode = new_interface->GetStringValue("Game", "IoMode", "JVS");
 	if (StringUtil::Strcasecmp(io_mode.c_str(), "EXTIO") == 0)
 		io_mode = "EXTIO";
@@ -668,6 +671,9 @@ bool GameList::GetPython1ListEntry(const std::string& path, GameList::Entry* ent
 	sif->SetStringValue("Python1/Game", "ExternalDongleFile", external_dongle_path.c_str());
 	sif->SetStringValue("Python1/Game", "MemoryCardDongleFile", memory_card_dongle_path.c_str());
 	sif->SetStringValue("Python1/Game", "MemoryCardIdFile", memory_card_id_path.c_str());
+	sif->SetStringValue("Python1/Game", "CardNumber", card_number.c_str());
+	sif->SetStringValue("Python1/Game", "ServerUrl", server_url.c_str());
+	sif->SetStringValue("Python1/Game", "PcbId", pcb_id.c_str());
 	sif->SetStringValue("Python1/Game", "IoMode", io_mode.c_str());
 	sif->SetBoolValue("DEV9/Hdd", "HddEnable", false);
 	sif->SetStringValue("DEV9/Hdd", "HddFile", "");

@@ -60,6 +60,15 @@ Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, Setti
 	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.memoryCardIdPath, "Python1/Game", "MemoryCardIdFile", "");
 	m_ui.memoryCardIdPath->setEnabled(true);
 	connect(m_ui.memoryCardIdBrowse, &QPushButton::clicked, this, &Python1SettingsWidget::onMemoryCardIdBrowseClicked);
+
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cardNumber, "Python1/Game", "CardNumber", "");
+	m_ui.cardNumber->setEnabled(true);
+
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.serverUrl, "Python1/Game", "ServerUrl", "");
+	m_ui.serverUrl->setEnabled(true);
+
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.pcbId, "Python1/Game", "PcbId", "");
+	m_ui.pcbId->setEnabled(true);
 }
 
 void Python1SettingsWidget::onHddImageBrowseClicked()

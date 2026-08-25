@@ -6,6 +6,7 @@
 #include "IopDma.h"
 #include "IopHw.h"
 #include "IopMem.h"
+#include "Memory.h"
 #include "R3000A.h"
 #include "StateWrapper.h"
 
@@ -402,6 +403,24 @@ namespace
 		bool WriteIopMemory(u32 address, const void* data, u32 size) override
 		{
 			return iopMemSafeWriteBytes(address, data, size);
+		}
+
+		bool ReadEeMemory(u32 address, void* data, u32 size) override
+		{
+			if (!eeMem || (static_cast<u64>(address) + size) > Ps2MemSize::ExposedRam)
+				return false;
+
+			std::memcpy(data, &eeMem->Main[address], size);
+			return true;
+		}
+
+		bool WriteEeMemory(u32 address, const void* data, u32 size) override
+		{
+			if (!eeMem || (static_cast<u64>(address) + size) > Ps2MemSize::ExposedRam)
+				return false;
+
+			std::memcpy(&eeMem->Main[address], data, size);
+			return true;
 		}
 
 		void QueueRemoteAsyncWriteQuad(u32 offset_high, u32 offset_low, u32 payload) override
