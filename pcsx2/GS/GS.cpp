@@ -183,6 +183,8 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 				return false;
 			}
 
+			GSSetVSyncMode(vsync_mode, allow_present_throttle);
+
 			// The renderer owns its own device for now.
 			okay = ImGuiManager::Initialize();
 			if (!okay)
@@ -985,6 +987,16 @@ void GSgetInternalResolution(int* width, int* height)
 	const GSVector2i res(gs->GetInternalResolution());
 	*width = res.x;
 	*height = res.y;
+}
+
+float GSGetDisplayAspectRatio()
+{
+#ifdef HAVE_PARALLEL_GS
+	if (g_pgs_renderer)
+		return g_pgs_renderer->GetDisplayAspectRatio();
+#endif
+
+	return 0.0f;
 }
 
 void GSgetStats(SmallStringBase& info)

@@ -113,6 +113,7 @@ public:
 	void UpdateConfig();
 
 	void GetInternalResolution(int* width, int* height);
+	float GetDisplayAspectRatio() const { return last_display_aspect_ratio; }
 	const ParallelGS::FlushStats& GetLastFrameStats() const { return last_frame_stats; }
 
 	int Freeze(freezeData* data, bool sizeonly);
@@ -148,6 +149,7 @@ private:
 	bool current_super_sample_textures = false;
 	uint32_t last_internal_width = 0;
 	uint32_t last_internal_height = 0;
+	float last_display_aspect_ratio = 0.0f;
 
 	static int GetSaveStateSize(int version);
 

@@ -224,6 +224,7 @@ bool GSDevicePGS::Init()
 
 	wsi.set_platform(this);
 	wsi.set_frame_duplication_aware(true, 5);
+	wsi.set_present_wait_latency(1);
 
 	bool ret = wsi.init_simple(1, {});
 	if (!ret)
@@ -887,6 +888,7 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 			float horizontal_scanout_ratio = float(vsync.internal_width) / float(vsync.mode_width);
 			float vertical_scanout_ratio = float(vsync.internal_height) / float(vsync.mode_height);
 			game_aspect *= horizontal_scanout_ratio / vertical_scanout_ratio;
+			last_display_aspect_ratio = game_aspect;
 
 			if (display_aspect > game_aspect)
 				new_width = uint32_t(std::round(float(output_height) * game_aspect));
