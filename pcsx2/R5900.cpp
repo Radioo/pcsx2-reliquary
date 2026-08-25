@@ -30,6 +30,9 @@
 
 #include "fmt/format.h"
 
+#include <algorithm>
+#include <vector>
+
 using namespace R5900;	// for R5900 disasm tools
 
 s32 EEsCycle;		// used to sync the IOP to the EE
@@ -796,6 +799,72 @@ inline bool isBranchOrJump(u32 addr)
 // The next two functions return 0 if no breakpoint is needed,
 // 1 if it's needed on the current pc, 2 if it's needed in the delay slot
 // 3 if needed in both
+
+namespace
+{
+	struct EeFunctionLogHook
+	{
+		u32 address;
+		EeFunctionLog::Callback callback;
+	};
+
+	std::vector<EeFunctionLogHook> s_ee_function_log_hooks;
+	u32 s_ee_function_log_min = 0;
+	u32 s_ee_function_log_max = 0;
+} // namespace
+
+void EeFunctionLog::Register(u32 address, Callback callback)
+{
+	address &= 0x1fffffff;
+
+	if (s_ee_function_log_hooks.empty())
+	{
+		s_ee_function_log_min = address;
+		s_ee_function_log_max = address;
+	}
+	else
+	{
+		s_ee_function_log_min = std::min(s_ee_function_log_min, address);
+		s_ee_function_log_max = std::max(s_ee_function_log_max, address);
+	}
+
+	s_ee_function_log_hooks.push_back({address, callback});
+}
+
+void EeFunctionLog::Clear()
+{
+	s_ee_function_log_hooks.clear();
+	s_ee_function_log_min = 0;
+	s_ee_function_log_max = 0;
+}
+
+bool EeFunctionLog::IsHooked(u32 address)
+{
+	address &= 0x1fffffff;
+
+	if (s_ee_function_log_hooks.empty() || address < s_ee_function_log_min || address > s_ee_function_log_max)
+		return false;
+
+	for (const EeFunctionLogHook& hook : s_ee_function_log_hooks)
+	{
+		if (hook.address == address)
+			return true;
+	}
+	return false;
+}
+
+void EeFunctionLog::Dispatch()
+{
+	const u32 address = cpuRegs.pc & 0x1fffffff;
+	for (const EeFunctionLogHook& hook : s_ee_function_log_hooks)
+	{
+		if (hook.address == address)
+		{
+			hook.callback();
+			return;
+		}
+	}
+}
 
 int isBreakpointNeeded(u32 addr)
 {

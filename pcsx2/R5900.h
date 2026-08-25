@@ -421,6 +421,16 @@ extern void cpuTestTIMRInts();
 int isMemcheckNeeded(u32 pc);
 int isBreakpointNeeded(u32 addr);
 
+namespace EeFunctionLog
+{
+	using Callback = void (*)();
+
+	void Register(u32 address, Callback callback);
+	void Clear();
+	bool IsHooked(u32 address);
+	void Dispatch();
+}
+
 ////////////////////////////////////////////////////////////////////
 // Exception Codes
 

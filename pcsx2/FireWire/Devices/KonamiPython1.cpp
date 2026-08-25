@@ -58,6 +58,9 @@ namespace
 	constexpr u32 UART_RX_QUEUE_LIMIT = 0x400;
 	constexpr u32 UART_CALLBACK_BYTE_LIMIT = 38;
 	constexpr u64 KONAMI_STORAGE_READ_BYTES_PER_SECOND = 24ull * 1024 * 1024;
+	constexpr u32 PYTHON1_EE_STDOUT_FD = 1;
+	constexpr u32 PYTHON1_EE_STDERR_FD = 2;
+	constexpr u32 PYTHON1_EE_STDOUT_MAX_WRITE = 4096;
 	constexpr u64 KONAMI_NET_POLLS_PER_SECOND = 4000;
 	constexpr u32 KONAMI_ADPCM_HEADER_SIZE = 0x10;
 	constexpr u32 KONAMI_ADPCM_MAX_ENCODED_BYTES = 32 * 1024 * 1024;
@@ -1039,6 +1042,14 @@ namespace
 		POPN_READER_STATUS_CARD_INSIDE = 0x80,
 	};
 
+	std::string HexDump(const u8* data, u32 size)
+	{
+		std::string out;
+		for (u32 i = 0; i < size; i++)
+			out += StringUtil::StdStringFromFormat("%02x ", data[i]);
+		return out;
+	}
+
 	struct PopnCardReaderState
 	{
 		bool shutter_open = false;
@@ -1053,6 +1064,8 @@ namespace
 	};
 
 	PopnCardReaderState s_popn_reader;
+	u8 s_popn_reader_logged_status = 0;
+	bool s_popn_reader_status_logged = false;
 
 	u8 PopnCardCrc8(const u8* data, u32 size)
 	{
@@ -1165,6 +1178,7 @@ namespace
 
 	void ResetPopnCardReaderRuntimeState()
 	{
+		s_popn_reader_status_logged = false;
 		s_popn_reader.shutter_open = false;
 		s_popn_reader.card_inside = false;
 		s_popn_reader.insert_pending = false;
@@ -1185,11 +1199,36 @@ namespace
 		return status;
 	}
 
+	std::string DescribePopnReaderState()
+	{
+		return StringUtil::StdStringFromFormat("shutter=%u card=%u read_ready=%u write_buf=%u",
+			s_popn_reader.shutter_open ? 1 : 0, s_popn_reader.card_inside ? 1 : 0,
+			s_popn_reader.read_ready ? 1 : 0, s_popn_reader.write_buffer_loaded ? 1 : 0);
+	}
+
+	const char* PopnReaderControlName(u8 op)
+	{
+		switch (op)
+		{
+			case POPN_READER_CONTROL_OPEN:
+				return "open";
+			case POPN_READER_CONTROL_EJECT:
+				return "eject";
+			case POPN_READER_CONTROL_READ:
+				return "read";
+			case POPN_READER_CONTROL_WRITE:
+				return "write";
+			default:
+				return "unknown";
+		}
+	}
+
 	void InsertPopnCard()
 	{
 		s_popn_reader.card_inside = true;
 		s_popn_reader.insert_pending = false;
 		s_popn_reader.read_ready = false;
+		Console.WriteLn("POPN READER: card drawn in, %s", DescribePopnReaderState().c_str());
 		Host::AddKeyedOSDMessage("Python1PopnCard", "Card inserted into the reader.", 3.0f);
 	}
 
@@ -1254,6 +1293,8 @@ namespace
 		std::array<u8, POPN_KEYPAD_MAX_EVENTS_PER_POLL> events = {};
 		const u32 event_count = s_device ? s_device->PopPopnKeypadEvents(events.data(), static_cast<u32>(events.size())) : 0;
 		std::vector<u8> reply = {0xaa, 0x01, node, command};
+		if (event_count != 0)
+			Console.WriteLn("POPN READER: keypad %u event(s) %s", event_count, HexDump(events.data(), event_count).c_str());
 		if (event_count == 0)
 		{
 			reply.push_back(0x00);
@@ -1272,7 +1313,7 @@ namespace
 		QueueUartBytes(reply.data(), static_cast<u32>(reply.size()));
 	}
 
-	u8 RunPopnReaderControl(u8 op)
+	u8 RunPopnReaderControlOp(u8 op)
 	{
 		switch (op)
 		{
@@ -1309,12 +1350,23 @@ namespace
 		}
 	}
 
+	u8 RunPopnReaderControl(u8 op)
+	{
+		const u8 result = RunPopnReaderControlOp(op);
+		Console.WriteLn("POPN READER: control %s(0x%02x) -> 0x%02x, %s", PopnReaderControlName(op), op, result,
+			DescribePopnReaderState().c_str());
+		return result;
+	}
+
 	void HandlePopnReaderDeviceCommand(const std::vector<u8>& bytes)
 	{
 		const u8 node = bytes[2];
 		const u8 command = bytes[3];
 		const u8* payload = bytes.data() + 5;
 		const u32 payload_size = static_cast<u32>(bytes.size()) - 6;
+		if (command != 0x12 && command != 0x26)
+			DevCon.WriteLn("POPN READER: cmd 0x%02x node=0x%02x payload %s", command, node,
+				HexDump(payload, payload_size).c_str());
 		switch (command)
 		{
 			case 0x00:
@@ -1324,8 +1376,17 @@ namespace
 				QueuePopnReaderByteReply(node, command, 0x00);
 				break;
 			case 0x12:
-				QueuePopnReaderByteReply(node, command, GetPopnReaderStatus());
+			{
+				const u8 status = GetPopnReaderStatus();
+				if (!s_popn_reader_status_logged || status != s_popn_reader_logged_status)
+				{
+					s_popn_reader_status_logged = true;
+					s_popn_reader_logged_status = status;
+					Console.WriteLn("POPN READER: status 0x%02x, %s", status, DescribePopnReaderState().c_str());
+				}
+				QueuePopnReaderByteReply(node, command, status);
 				break;
+			}
 			case 0x14:
 			case 0x15:
 				QueuePopnReaderByteReply(node, command, payload_size >= 1 ? RunPopnReaderControl(payload[0]) : 0xff);
@@ -1361,17 +1422,11 @@ namespace
 				QueuePopnReaderKeypadReply(node, command);
 				break;
 			default:
+				Console.Error("POPN READER: unhandled command 0x%02x node=0x%02x payload %s", command, node,
+					HexDump(payload, payload_size).c_str());
 				QueuePopnReaderByteReply(node, command, 0x00);
 				break;
 		}
-	}
-
-	std::string HexDump(const u8* data, u32 size)
-	{
-		std::string out;
-		for (u32 i = 0; i < size; i++)
-			out += StringUtil::StdStringFromFormat("%02x ", data[i]);
-		return out;
 	}
 
 	void HandlePopnReaderUartWriteInner(const std::vector<u8>& bytes)
@@ -1383,17 +1438,24 @@ namespace
 		s_uart_rx_fifo.clear();
 		QueueUartBytes(bytes.data(), static_cast<u32>(bytes.size()));
 		if (bytes.size() < 4 || bytes[0] != 0xaa)
+		{
+			Console.Error("POPN READER: malformed frame %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
 			return;
+		}
 
 		if (bytes[1] == 0xaa)
 		{
 			if (bytes[2] == 0xaa && bytes[3] == 0x55)
 				return;
 			if (bytes.size() < 6)
+			{
+				Console.Error("POPN READER: short bus frame %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
 				return;
+			}
 
 			const u8 node = bytes[2];
 			const u8 command = bytes[3];
+			DevCon.WriteLn("POPN READER: bus node=0x%02x command=0x%02x", node, command);
 			if (node == 0x00 && command == 0x01)
 			{
 				const u8 count[] = {0x01, 0x01};
@@ -1410,20 +1472,33 @@ namespace
 				const u8 started[] = {0x01, 0x00};
 				QueuePopnReaderBusReply(0xa5, node, command, started, sizeof(started));
 			}
+			else
+			{
+				Console.Error("POPN READER: unhandled bus command node=0x%02x command=0x%02x frame %s", node, command,
+					HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
+			}
 			return;
 		}
 
 		if (bytes[1] == 0x00 && bytes.size() >= 6)
+		{
 			HandlePopnReaderDeviceCommand(bytes);
+			return;
+		}
+
+		Console.Error("POPN READER: unroutable frame %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
 	}
 
 	void HandlePopnReaderUartWrite(const std::vector<u8>& bytes)
 	{
-		const size_t rx_before = s_uart_rx_fifo.size();
+		const bool is_sync = bytes.size() >= 4 && bytes[0] == 0xaa && bytes[1] == 0xaa && bytes[2] == 0xaa;
 		HandlePopnReaderUartWriteInner(bytes);
-		if (FW_VERBOSE_LOGS && (bytes.size() < 4 || bytes[0] != 0xaa || bytes[1] != 0xaa || bytes[2] != 0xaa))
+		const size_t echo_size = std::min<size_t>(bytes.size(), UART_RX_QUEUE_LIMIT);
+		if (!is_sync && s_uart_rx_fifo.size() <= echo_size)
+			Console.Error("POPN READER: no reply queued for %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
+		if (FW_VERBOSE_LOGS && !is_sync)
 			DevCon.WriteLn("POPN READER: w %s| rx %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str(),
-				s_uart_rx_fifo.size() > rx_before ? HexDump(s_uart_rx_fifo.data() + rx_before, static_cast<u32>(s_uart_rx_fifo.size() - rx_before)).c_str() : "(none)");
+				s_uart_rx_fifo.size() > echo_size ? HexDump(s_uart_rx_fifo.data() + echo_size, static_cast<u32>(s_uart_rx_fifo.size() - echo_size)).c_str() : "(none)");
 	}
 
 	void HandleAcioUartWrite(const u32* payload, u32 payload_quads, u32 byte_count, bool extio_mode)
@@ -1599,6 +1674,41 @@ namespace
 	{
 		const char* env_path = std::getenv(env_key);
 		return (env_path && env_path[0]) ? std::string(env_path) : Host::GetStringSettingValue(PYTHON1_GAME_CONFIG_SECTION, key, "");
+	}
+
+	void Python1EeStdoutWrite()
+	{
+		const u32 fd = static_cast<u32>(cpuRegs.GPR.n.a0.UL[0]);
+		if (fd != PYTHON1_EE_STDOUT_FD && fd != PYTHON1_EE_STDERR_FD)
+			return;
+
+		const u32 length = std::min<u32>(static_cast<u32>(cpuRegs.GPR.n.a2.UL[0]), PYTHON1_EE_STDOUT_MAX_WRITE);
+		if (length == 0)
+			return;
+
+		const char* text = static_cast<const char*>(PSM(static_cast<u32>(cpuRegs.GPR.n.a1.UL[0])));
+		if (!text)
+			return;
+
+		eeConLog(ShiftJIS_ConvertString(text, static_cast<int>(length)));
+	}
+
+	void RegisterPython1EeStdoutHook()
+	{
+		const std::string setting = GetPython1GamePath("EeStdoutHookAddress", "PCSX2_FW_EE_STDOUT_HOOK");
+		if (setting.empty())
+			return;
+
+		const std::optional<u32> address = StringUtil::FromChars<u32>(
+			StringUtil::StartsWithNoCase(setting, "0x") ? std::string_view(setting).substr(2) : std::string_view(setting), 16);
+		if (!address.has_value() || address.value() == 0)
+		{
+			Console.Error("FW HLE: bad Python 1 EeStdoutHookAddress '%s'", setting.c_str());
+			return;
+		}
+
+		EeFunctionLog::Register(address.value(), Python1EeStdoutWrite);
+		Console.WriteLn("FW HLE: EE stdout hook installed at 0x%08x", address.value());
 	}
 
 	std::string GetHddImagePath()
@@ -4701,6 +4811,7 @@ namespace
 		LoadDallasDongles();
 		LoadConfigRom();
 		LoadPopnCard();
+		RegisterPython1EeStdoutHook();
 		StartPython1ServerResolve();
 		SoftResetRuntimeState();
 		return true;
@@ -4708,6 +4819,7 @@ namespace
 
 	void KonamiPython1Device::Close()
 	{
+		EeFunctionLog::Clear();
 		SaveBootromIfDirty();
 		SaveBbsramIfDirty();
 		SaveDallasDongleIfDirty();

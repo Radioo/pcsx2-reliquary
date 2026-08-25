@@ -536,6 +536,61 @@ static void _DynGen_Dispatchers()
 //////////////////////////////////////////////////////////////////////////////////////////
 //
 
+static const char* const eeGprNames[32] = {
+	"zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+	"t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+	"s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+	"t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"};
+
+static bool eeLooksLikeCodeAddress(u32 value)
+{
+	if ((value & 3) != 0)
+		return false;
+
+	const u32 masked = value & 0x1fffffff;
+	return masked >= 0x00080000 && masked < Ps2MemSize::ExposedRam;
+}
+
+static void recDumpCrashContext(u32 target)
+{
+	Console.Error("EE crash context: attempted jump to 0x%08x", target);
+
+	for (int i = 0; i < 32; i += 4)
+	{
+		Console.Error("  $%-4s %016llx  $%-4s %016llx  $%-4s %016llx  $%-4s %016llx",
+			eeGprNames[i + 0], cpuRegs.GPR.r[i + 0].UD[0],
+			eeGprNames[i + 1], cpuRegs.GPR.r[i + 1].UD[0],
+			eeGprNames[i + 2], cpuRegs.GPR.r[i + 2].UD[0],
+			eeGprNames[i + 3], cpuRegs.GPR.r[i + 3].UD[0]);
+	}
+
+	const u32 sp = static_cast<u32>(cpuRegs.GPR.n.sp.UD[0]);
+	const u32 stackStart = sp - 0x100;
+	Console.Error("EE stack around $sp = 0x%08x", sp);
+
+	for (u32 offset = 0; offset < 0x300; offset += 0x10)
+	{
+		const u32 addr = stackStart + offset;
+		const u32* const words = static_cast<const u32*>(PSM(addr));
+		if (!words)
+			continue;
+
+		Console.Error("  %08x: %08x %08x %08x %08x", addr, words[0], words[1], words[2], words[3]);
+	}
+
+	Console.Error("EE stack words that look like code addresses");
+	for (u32 offset = 0; offset < 0x500; offset += 4)
+	{
+		const u32 addr = stackStart + offset;
+		const u32* const word = static_cast<const u32*>(PSM(addr));
+		if (!word || !eeLooksLikeCodeAddress(*word))
+			continue;
+
+		Console.Error("  %08x: %08x", addr, *word);
+	}
+}
+
+
 static void recError(u32 error)
 {
 	switch (error)
@@ -547,6 +602,8 @@ static void recError(u32 error)
 			Host::ReportErrorAsync("R5900 Exception", fmt::format("Jump to unaligned address (PC: 0x{:08x})", cpuRegs.pc));
 			break;
 	}
+
+	recDumpCrashContext(cpuRegs.pc);
 
 	VMManager::SetPaused(true);
 	recExitExecution();
@@ -1685,6 +1742,12 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	{
 		if(encodeBreakpoint() || encodeMemcheck())
 			xFastCall((void*)CBreakPoints::CommitClearSkipFirst, BREAKPOINT_EE);
+
+		if (EeFunctionLog::IsHooked(pc))
+		{
+			iFlushCall(FLUSH_EVERYTHING | FLUSH_PC);
+			xFastCall((void*)EeFunctionLog::Dispatch);
+		}
 	}
 	else
 	{
