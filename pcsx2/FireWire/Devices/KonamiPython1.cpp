@@ -3774,6 +3774,7 @@ namespace
 		socket_state.handle = NET_INVALID_SOCKET;
 		socket_state.is_stream = false;
 		socket_state.is_raw = false;
+		s_net_rx_packets[channel].clear();
 	}
 
 	bool SetNetSocketNonBlocking(NetSocket handle)
@@ -3997,18 +3998,21 @@ namespace
 				byte_count);
 	}
 
-	bool ReceiveNetChannelStream(u32 channel, u32 address, u32 byte_count, u32* transferred)
+	Python1NetTransferResult ReceiveNetChannelStream(u32 channel, u32 address, u32 byte_count, u32* transferred)
 	{
 		const NetSocket handle = s_net_sockets[channel].handle;
 		if (handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
-			return false;
+			return Python1NetTransferResult::Failed;
 
 		std::vector<u8> buffer(byte_count);
 		const int received = recv(handle, reinterpret_cast<char*>(buffer.data()), static_cast<int>(byte_count), 0);
 		if (received < 0)
 		{
+			if (WouldBlockNetSocket())
+				return Python1NetTransferResult::InProgress;
+
 			Console.Error("FW NET: recv failed channel=%u", channel);
-			return false;
+			return Python1NetTransferResult::Failed;
 		}
 
 		*transferred = static_cast<u32>(received);
@@ -4021,7 +4025,7 @@ namespace
 			if (*transferred != 0)
 				LogNetBufferText(buffer.data(), *transferred);
 		}
-		return true;
+		return Python1NetTransferResult::Complete;
 	}
 
 	u32 PackNetAddress(const u8* address)
@@ -4358,7 +4362,7 @@ namespace
 		{
 			return false;
 		}
-		else if (command == 0x15 || command == 0x17)
+		else if (command == 0x15)
 		{
 			MaybeQueueNetReply(channel, payload, payload_quads);
 		}
@@ -4396,13 +4400,17 @@ namespace
 		{
 			if (command == 0x16)
 			{
-				if (!IsNetChannelReadable(channel))
+				Python1NetTransferResult result = Python1NetTransferResult::InProgress;
+				if (IsNetChannelReadable(channel))
+					result = ReceiveNetChannelStream(channel, payload[2], payload[3], &stream_transferred);
+
+				if (result == Python1NetTransferResult::InProgress)
 				{
 					BeginPendingNetOperation(channel, Python1NetPendingKind::Receive, payload[2], payload[3]);
 					return true;
 				}
 
-				stream_transfer_done = ReceiveNetChannelStream(channel, payload[2], payload[3], &stream_transferred);
+				stream_transfer_done = result == Python1NetTransferResult::Complete;
 			}
 			else
 			{
@@ -4429,7 +4437,8 @@ namespace
 
 		PendingNetPacket received_packet;
 		bool has_received_packet = false;
-		if ((command == 0x16 || command == 0x17) && payload_quads >= 4 && !s_net_rx_packets[channel].empty())
+		if ((command == 0x16 || command == 0x17) && payload_quads >= 4 && !s_net_sockets[channel].is_stream &&
+			!s_net_rx_packets[channel].empty())
 		{
 			received_packet = std::move(s_net_rx_packets[channel].front());
 			s_net_rx_packets[channel].erase(s_net_rx_packets[channel].begin());
@@ -4460,6 +4469,7 @@ namespace
 			response[1] = ByteSwap32(property_response_bytes);
 		QueuePendingDbufBlockWrite(0xfffe, KONAMI_NET_RESPONSE_OFFSET_BASE + channel * KONAMI_NET_RESPONSE_STRIDE,
 			response.data(), static_cast<u32>(response.size()));
+		FlushPendingDbufR0RxPacket();
 		return true;
 	}
 
@@ -5051,9 +5061,13 @@ namespace
 						continue;
 
 					u32 transferred = 0;
-					const bool received = ReceiveNetChannelStream(channel, operation.address, operation.byte_count,
-						&transferred);
-					CompletePendingNetOperation(channel, received ? ByteSwap32(transferred) : 0);
+					const Python1NetTransferResult result = ReceiveNetChannelStream(channel, operation.address,
+						operation.byte_count, &transferred);
+					if (result == Python1NetTransferResult::InProgress)
+						continue;
+
+					CompletePendingNetOperation(channel,
+						result == Python1NetTransferResult::Complete ? ByteSwap32(transferred) : 0);
 					break;
 				}
 
