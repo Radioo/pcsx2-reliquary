@@ -237,6 +237,20 @@
         </property>
        </widget>
       </item>
+        <item row="14" column="0">
+       <widget class="QLabel" name="cabinetPhaseLabel">
+        <property name="text">
+         <string>Pop'n 9 Cabinet Phase:</string>
+        </property>
+       </widget>
+      </item>
+        <item row="14" column="1">
+       <widget class="QComboBox" name="cabinetPhase">
+        <property name="toolTip">
+         <string>Overrides the pop'n music 9 event phase held in BBSRAM, the value TEST MODE shows under EVENT OPTIONS. The cabinet's own value is restored before the game writes its settings back, so switching phases here never changes what is stored.</string>
+        </property>
+       </widget>
+      </item>
       </layout>
      </widget>
    </item>

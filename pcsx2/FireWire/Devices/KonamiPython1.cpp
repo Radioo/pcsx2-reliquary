@@ -120,6 +120,12 @@ namespace
 	constexpr u32 POPN_EE_MODULE_LIST_PTR = 0x00257f30;
 	constexpr u32 POPN_EE_MAX_REGISTRY_ENTRIES = 64;
 	constexpr u32 POPN_EE_MAX_STRING = 128;
+	constexpr u32 POPN_EE_CABINET_PHASE_ADDRESS = 0x01212194;
+	constexpr u32 POPN_EE_CABINET_PHASE_READ_FUNCTION = 0x001aa4f0;
+	constexpr u32 POPN_EE_CABINET_PHASE_WRITE_FUNCTION = 0x001aa500;
+	constexpr u32 POPN_EE_SETTINGS_COMMIT_FUNCTION = 0x001a9cc8;
+	constexpr int POPN_CABINET_PHASE_MAX = 4;
+	constexpr const char* PYTHON1_CABINET_PHASE_KEY = "CabinetPhase";
 	constexpr u8 ICMP_ECHO_REQUEST = 8;
 	constexpr u8 ICMP_ECHO_REPLY = 0;
 	constexpr u8 IP_PROTOCOL_ICMP = 1;
@@ -649,6 +655,7 @@ namespace
 	bool s_popn_pcb_id_prefix_patched = false;
 	u32 s_popn_net_state = 0xffffffff;
 	u32 s_popn_net_status = 0xffffffff;
+	int s_popn_cabinet_phase_native = -1;
 	std::array<u8, 64> s_net_property_response;
 	std::vector<u8> s_uart_rx_fifo;
 	std::string s_popn_last_reader_frame;
@@ -1759,6 +1766,83 @@ namespace
 			return;
 
 		eeConLog(ShiftJIS_ConvertString(text, static_cast<int>(length)));
+	}
+
+	int GetPopnCabinetPhaseOverride()
+	{
+		const std::string setting = GetPython1GamePath(PYTHON1_CABINET_PHASE_KEY, "PCSX2_FW_POPN_CABINET_PHASE");
+		if (setting.empty())
+			return -1;
+
+		const std::optional<int> phase = StringUtil::FromChars<int>(setting);
+		if (!phase.has_value() || phase.value() < 0 || phase.value() > POPN_CABINET_PHASE_MAX)
+		{
+			Console.Error("FW HLE: bad Python 1 CabinetPhase '%s'", setting.c_str());
+			return -1;
+		}
+		return phase.value();
+	}
+
+	void WritePopnCabinetPhase(u8 phase)
+	{
+		u8 current = 0;
+		if (!ReadEeMemory(POPN_EE_CABINET_PHASE_ADDRESS, &current, sizeof(current)) || current == phase)
+			return;
+
+		WriteEeMemory(POPN_EE_CABINET_PHASE_ADDRESS, &phase, sizeof(phase));
+		if (NetLogsEnabled())
+			Console.WriteLn("FW HLE: pop'n cabinet phase %u -> %u", static_cast<u32>(current), static_cast<u32>(phase));
+	}
+
+	void RestorePopnCabinetPhase()
+	{
+		if (s_popn_cabinet_phase_native < 0)
+			return;
+
+		WritePopnCabinetPhase(static_cast<u8>(s_popn_cabinet_phase_native));
+		s_popn_cabinet_phase_native = -1;
+	}
+
+	void Python1PopnCabinetPhaseRead()
+	{
+		const int phase = GetPopnCabinetPhaseOverride();
+		if (phase < 0)
+		{
+			RestorePopnCabinetPhase();
+			return;
+		}
+
+		if (s_popn_cabinet_phase_native < 0)
+		{
+			u8 current = 0;
+			if (!ReadEeMemory(POPN_EE_CABINET_PHASE_ADDRESS, &current, sizeof(current)))
+				return;
+
+			s_popn_cabinet_phase_native = static_cast<int>(current);
+		}
+
+		WritePopnCabinetPhase(static_cast<u8>(phase));
+	}
+
+	void Python1PopnCabinetPhaseWrite()
+	{
+		s_popn_cabinet_phase_native = static_cast<int>(cpuRegs.GPR.n.a0.UL[0] & 0xff);
+	}
+
+	void Python1PopnSettingsCommit()
+	{
+		RestorePopnCabinetPhase();
+	}
+
+	void RegisterPopnCabinetPhaseHooks()
+	{
+		if (GetPython1IOMode() != Python1IOMode::POPN)
+			return;
+
+		s_popn_cabinet_phase_native = -1;
+		EeFunctionLog::Register(POPN_EE_CABINET_PHASE_READ_FUNCTION, Python1PopnCabinetPhaseRead);
+		EeFunctionLog::Register(POPN_EE_CABINET_PHASE_WRITE_FUNCTION, Python1PopnCabinetPhaseWrite);
+		EeFunctionLog::Register(POPN_EE_SETTINGS_COMMIT_FUNCTION, Python1PopnSettingsCommit);
 	}
 
 	void RegisterPython1EeStdoutHook()
@@ -4939,6 +5023,7 @@ namespace
 		LoadConfigRom();
 		LoadPopnCard();
 		RegisterPython1EeStdoutHook();
+		RegisterPopnCabinetPhaseHooks();
 		StartPython1ServerResolve();
 		SoftResetRuntimeState();
 		return true;
@@ -5227,6 +5312,7 @@ namespace
 		sw.DoArray(s_p1io_coin_counters, std::size(s_p1io_coin_counters));
 		sw.Do(&s_p1io_output_latch_byte);
 		sw.Do(&s_p1io_memcard_slot);
+		sw.Do(&s_popn_cabinet_phase_native);
 		sw.Do(&s_next_sector_read_ready_cycle);
 		DoSubboardAdpcmPlaybackState(s_subboard_adpcm, sw);
 

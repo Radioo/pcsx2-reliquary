@@ -69,6 +69,14 @@ Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, Setti
 
 	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.pcbId, "Python1/Game", "PcbId", "");
 	m_ui.pcbId->setEnabled(true);
+
+	m_ui.cabinetPhase->addItem(tr("Use the cabinet's saved phase"), QString());
+	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:--"), QStringLiteral("0"));
+	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:1.TATAKAE! GAMBLER Z"), QStringLiteral("1"));
+	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:2.TATAKAE! GAMBLER Z + SECRET DATA RELEASE"), QStringLiteral("2"));
+	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:3.TATAKAE! GAMBLER Z DATA RELEASE"), QStringLiteral("3"));
+	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:MAX. HITASURA MODE RELEASE"), QStringLiteral("4"));
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cabinetPhase, "Python1/Game", "CabinetPhase", "");
 }
 
 void Python1SettingsWidget::onHddImageBrowseClicked()
