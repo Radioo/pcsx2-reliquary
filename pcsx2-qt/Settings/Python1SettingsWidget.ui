@@ -251,6 +251,20 @@
         </property>
        </widget>
       </item>
+        <item row="15" column="0">
+       <widget class="QLabel" name="popnCardDesignLabel">
+        <property name="text">
+         <string>Pop'n 9 Card Data:</string>
+        </property>
+       </widget>
+      </item>
+        <item row="15" column="1">
+       <widget class="QComboBox" name="popnCardDesign">
+        <property name="toolTip">
+         <string>Twenty pop'n music 9 e-amusement card designs were sold and each one carried a different hidden value, which decides the extra bonus a visiting P-FRIEND brings. This overrides that value in the emulated card. Which printed design carried which value is not known, so the entries are named after what they unlock. The card file on disk is not modified.</string>
+        </property>
+       </widget>
+      </item>
       </layout>
      </widget>
    </item>

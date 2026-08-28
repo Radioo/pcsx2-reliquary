@@ -77,6 +77,30 @@ Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, Setti
 	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:3.TATAKAE! GAMBLER Z DATA RELEASE"), QStringLiteral("3"));
 	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:MAX. HITASURA MODE RELEASE"), QStringLiteral("4"));
 	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cabinetPhase, "Python1/Game", "CabinetPhase", "");
+
+	m_ui.popnCardDesign->addItem(tr("Blank card (no bonus)"), QString());
+	m_ui.popnCardDesign->addItem(QStringLiteral("1 - song: LOVE FIRE"), QStringLiteral("1"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("2 - song: TOON MANIAC"), QStringLiteral("2"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("3 - song: Cry Out"), QStringLiteral("3"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("4 - song: HONEまで トゥナイト"), QStringLiteral("4"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("5 - song: Tap'n! Slap'n! Pop'n Music!"), QStringLiteral("5"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("6 - song: WITHOUT YOU AROUND"), QStringLiteral("6"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("7 - song: 映画「SICILLIANA」のテーマ"), QStringLiteral("7"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("8 - song: 宇宙船Q-Mex"), QStringLiteral("8"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("9 - song: ostin-art"), QStringLiteral("9"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("10 - song: クチビル"), QStringLiteral("10"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("11 - song: power plant"), QStringLiteral("11"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("12 - song: In a Grow"), QStringLiteral("12"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("13 - character: cats"), QStringLiteral("13"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("14 - character: yoshimoto"), QStringLiteral("14"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("15 - character: honerock"), QStringLiteral("15"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("16 - character: red"), QStringLiteral("16"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("17 - character: comoba"), QStringLiteral("17"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("18 - option: Hi-SPEED x6 / x8"), QStringLiteral("18"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("19 - option: CHARA-POP / STAGE-POP"), QStringLiteral("19"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("20 - option: SUPER RANDOM"), QStringLiteral("20"));
+	m_ui.popnCardDesign->addItem(QStringLiteral("21 - unlocks everything"), QStringLiteral("21"));
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.popnCardDesign, "Python1/Game", "CardDesign", "");
 }
 
 void Python1SettingsWidget::onHddImageBrowseClicked()

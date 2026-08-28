@@ -1050,6 +1050,7 @@ namespace
 	constexpr u8 POPN_CARD_NEW_HEADER[] = {0x28, 0x23, 0x41, 0x01};
 	constexpr u8 POPN_CARD_USED_HEADER[] = {0x68, 0x23, 0x41, 0x01};
 	constexpr u32 POPN_CARD_ID_OFFSET = 6;
+	constexpr u32 POPN_CARD_DESIGN_OFFSET = 5;
 	constexpr u8 POPN_READER_PRODUCT_REPLY_TAIL[] = {
 		0x01, 0x00, 0x00, 0x00,
 		0x00,
@@ -1164,6 +1165,21 @@ namespace
 		FinalizePopnCardCrcs(card);
 	}
 
+	void ApplyPopnCardDesign(std::array<u8, POPN_CARD_FILE_SIZE>& card)
+	{
+		const std::string text = GetPython1GamePath("CardDesign", "PCSX2_FW_POPN_CARD_DESIGN");
+		if (text.empty())
+			return;
+
+		const u32 design = static_cast<u32>(std::strtoul(text.c_str(), nullptr, 10));
+		if (design > 0xFF)
+			return;
+
+		card[POPN_CARD_DESIGN_OFFSET] = static_cast<u8>(design);
+		FinalizePopnCardCrcs(card);
+		Console.WriteLn("FW HLE: pop'n card design data set to %u", design);
+	}
+
 	std::string GetPopnCardPath()
 	{
 		return Path::Combine(EmuFolders::MemoryCards, POPN_CARD_DEFAULT_FILENAME);
@@ -1194,18 +1210,21 @@ namespace
 			ApplyPopnCardNumber(s_popn_reader.card, number.value());
 			SavePopnCard();
 			Console.WriteLn("FW HLE: pop'n card '%s' set to configured number", s_popn_reader.card_path.c_str());
+			ApplyPopnCardDesign(s_popn_reader.card);
 			return;
 		}
 
 		if (have_file)
 		{
 			Console.WriteLn("FW HLE: loaded pop'n card '%s'", s_popn_reader.card_path.c_str());
+			ApplyPopnCardDesign(s_popn_reader.card);
 			return;
 		}
 
 		BuildNewPopnCard(s_popn_reader.card);
 		SavePopnCard();
 		Console.WriteLn("FW HLE: created new pop'n card '%s'", s_popn_reader.card_path.c_str());
+		ApplyPopnCardDesign(s_popn_reader.card);
 	}
 
 	void ResetPopnCardReaderRuntimeState()
