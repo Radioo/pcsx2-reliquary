@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "FireWire/Devices/KonamiPython1.h"
+#include "FireWire/FireWire.h"
 
 #include "Common.h"
 #include "ChdHddImage.h"
@@ -53,8 +54,25 @@ extern "C" {
 
 namespace
 {
-	constexpr bool FW_VERBOSE_LOGS = false;
-	constexpr bool FW_NET_LOGS = true;
+	constexpr const char* PYTHON1_LOG_LEVEL_KEY = "LogLevel";
+	constexpr u32 NET_TEXT_LOG_LIMIT = 512;
+	constexpr size_t NET_BACKLOG_WARN_QUADS = 256;
+
+	bool DetailLogsEnabled()
+	{
+		return FireWire::GetLogLevel() >= FireWire::LogLevelDetail;
+	}
+
+	bool TraceLogsEnabled()
+	{
+		return FireWire::GetLogLevel() >= FireWire::LogLevelTrace;
+	}
+
+	bool NetLogsEnabled()
+	{
+		return FireWire::GetLogLevel() >= FireWire::LogLevelNormal;
+	}
+
 	constexpr u32 UART_RX_QUEUE_LIMIT = 0x400;
 	constexpr u32 UART_CALLBACK_BYTE_LIMIT = 38;
 	constexpr u64 KONAMI_STORAGE_READ_BYTES_PER_SECOND = 24ull * 1024 * 1024;
@@ -590,6 +608,10 @@ namespace
 		NetSocket handle = NET_INVALID_SOCKET;
 		bool is_stream = false;
 		bool is_raw = false;
+		u32 bytes_sent = 0;
+		u32 bytes_received = 0;
+		u32 receive_count = 0;
+		bool backlog_reported = false;
 	};
 
 	Python1NetSocket s_net_sockets[KONAMI_NET_CHANNEL_COUNT];
@@ -629,6 +651,8 @@ namespace
 	u32 s_popn_net_status = 0xffffffff;
 	std::array<u8, 64> s_net_property_response;
 	std::vector<u8> s_uart_rx_fifo;
+	std::string s_popn_last_reader_frame;
+	u32 s_popn_repeated_frame_count;
 	u8 s_bootrom[BOOTROM_SIZE];
 	std::vector<u32> s_io_config_rom;
 	u8 s_bbsram[BBSRAM_SIZE];
@@ -663,6 +687,7 @@ namespace
 	std::string GetPython1GamePath(const char* key, const char* env_key);
 	bool WriteBinaryFile(const std::string& path, const void* data, size_t size);
 	bool QueueUartReadData(u32 requested_bytes);
+	void LogPopnReaderFrame(const std::string& frame);
 	void SchedulePopnUartStream();
 	void ServicePopnUartStream();
 	void CloseHddImageFile();
@@ -1512,9 +1537,13 @@ namespace
 		const size_t echo_size = std::min<size_t>(bytes.size(), UART_RX_QUEUE_LIMIT);
 		if (!is_sync && s_uart_rx_fifo.size() <= echo_size)
 			Console.Error("POPN READER: no reply queued for %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str());
-		if (FW_VERBOSE_LOGS && !is_sync)
-			DevCon.WriteLn("POPN READER: w %s| rx %s", HexDump(bytes.data(), static_cast<u32>(bytes.size())).c_str(),
-				s_uart_rx_fifo.size() > echo_size ? HexDump(s_uart_rx_fifo.data() + echo_size, static_cast<u32>(s_uart_rx_fifo.size() - echo_size)).c_str() : "(none)");
+		if (DetailLogsEnabled() && !is_sync)
+		{
+			LogPopnReaderFrame("w " + HexDump(bytes.data(), static_cast<u32>(bytes.size())) + "| rx " +
+							   (s_uart_rx_fifo.size() > echo_size ?
+									   HexDump(s_uart_rx_fifo.data() + echo_size, static_cast<u32>(s_uart_rx_fifo.size() - echo_size)) :
+									   std::string("(none)")));
+		}
 	}
 
 	void HandleAcioUartWrite(const u32* payload, u32 payload_quads, u32 byte_count, bool extio_mode)
@@ -1659,13 +1688,36 @@ namespace
 		}
 	}
 
+	void FlushPopnReaderRepeatedFrames()
+	{
+		if (s_popn_repeated_frame_count == 0)
+			return;
+
+		DevCon.WriteLn("POPN READER: %s (repeated %u more times)", s_popn_last_reader_frame.c_str(),
+			s_popn_repeated_frame_count);
+		s_popn_repeated_frame_count = 0;
+	}
+
+	void LogPopnReaderFrame(const std::string& frame)
+	{
+		if (!TraceLogsEnabled() && frame == s_popn_last_reader_frame)
+		{
+			s_popn_repeated_frame_count++;
+			return;
+		}
+
+		FlushPopnReaderRepeatedFrames();
+		s_popn_last_reader_frame = frame;
+		DevCon.WriteLn("POPN READER: %s", frame.c_str());
+	}
+
 	bool QueueUartReadData(u32 requested_bytes)
 	{
 		const u32 byte_count = std::min<u32>(requested_bytes, static_cast<u32>(s_uart_rx_fifo.size()));
 		if (byte_count == 0)
 			return false;
 
-		if (FW_VERBOSE_LOGS && GetPython1IOMode() == Python1IOMode::POPN)
+		if (TraceLogsEnabled() && GetPython1IOMode() == Python1IOMode::POPN)
 			DevCon.WriteLn("POPN READER: r give=%u %s", byte_count, HexDump(s_uart_rx_fifo.data(), byte_count).c_str());
 
 		std::vector<u32> callback(2 + ((byte_count + 1) / 2));
@@ -3105,7 +3157,7 @@ namespace
 			return false;
 		}
 
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled())
 			DevCon.WriteLn("FW HLE: FireWire IOP DMA off_hi=0x1000 off_low=0x%x bytes=0x%zx", dest, size);
 		return true;
 	}
@@ -3767,13 +3819,23 @@ namespace
 #else
 			close(socket_state.handle);
 #endif
-			if (FW_NET_LOGS)
+			if (NetLogsEnabled())
 				Console.WriteLn("FW NET: closed host socket channel=%u", channel);
+		}
+
+		if (NetLogsEnabled() && (socket_state.bytes_sent != 0 || socket_state.bytes_received != 0))
+		{
+			Console.WriteLn("FW NET: channel=%u finished after %u bytes sent, %u bytes received in %u reads",
+				channel, socket_state.bytes_sent, socket_state.bytes_received, socket_state.receive_count);
 		}
 
 		socket_state.handle = NET_INVALID_SOCKET;
 		socket_state.is_stream = false;
 		socket_state.is_raw = false;
+		socket_state.bytes_sent = 0;
+		socket_state.bytes_received = 0;
+		socket_state.receive_count = 0;
+		socket_state.backlog_reported = false;
 		s_net_rx_packets[channel].clear();
 	}
 
@@ -3879,7 +3941,7 @@ namespace
 
 		if (WouldBlockNetSocket())
 		{
-			if (FW_NET_LOGS)
+			if (NetLogsEnabled())
 				Console.WriteLn("FW NET: connect in progress channel=%u to %u.%u.%u.%u:%u", channel, address[0],
 					address[1], address[2], address[3], s_net_server_port);
 			return Python1NetConnectResult::InProgress;
@@ -3909,17 +3971,27 @@ namespace
 		return true;
 	}
 
-	void LogNetBufferText(const u8* buffer, u32 byte_count)
+	std::string BuildNetBufferText(const u8* buffer, u32 byte_count)
 	{
+		const u32 shown = DetailLogsEnabled() ? byte_count : std::min<u32>(byte_count, NET_TEXT_LOG_LIMIT);
+
 		std::string text;
-		text.reserve(byte_count);
-		for (u32 index = 0; index < byte_count; index++)
+		text.reserve(shown);
+		for (u32 index = 0; index < shown; index++)
 		{
 			const u8 value = buffer[index];
 			text += (value >= 0x20 && value < 0x7f) ? static_cast<char>(value) : (value == 0x0a ? static_cast<char>(0x0a) : static_cast<char>(0x2e));
 		}
 
-		Console.WriteLn("%s", text.c_str());
+		if (shown < byte_count)
+			text += " ... (" + std::to_string(byte_count - shown) + " more bytes)";
+
+		return text;
+	}
+
+	void LogNetBufferText(const u8* buffer, u32 byte_count)
+	{
+		Console.WriteLn("%s", BuildNetBufferText(buffer, byte_count).c_str());
 	}
 
 	enum class Python1NetTransferResult
@@ -3943,6 +4015,7 @@ namespace
 			if (sent > 0)
 			{
 				operation.send_offset += static_cast<u32>(sent);
+				s_net_sockets[channel].bytes_sent += static_cast<u32>(sent);
 				continue;
 			}
 
@@ -3953,7 +4026,7 @@ namespace
 			return Python1NetTransferResult::Failed;
 		}
 
-		if (FW_NET_LOGS)
+		if (NetLogsEnabled())
 			Console.WriteLn("FW NET: sent channel=%u bytes=%u", channel, operation.send_offset);
 		return Python1NetTransferResult::Complete;
 	}
@@ -3993,7 +4066,7 @@ namespace
 			(static_cast<u64>(PSXCLK) / 1000) * KONAMI_NET_SOCKET_TIMEOUT_MS;
 		ScheduleDeviceEvent();
 
-		if (FW_NET_LOGS)
+		if (NetLogsEnabled())
 			Console.WriteLn("FW NET: deferred %s channel=%u bytes=%u", GetPendingNetOperationName(kind), channel,
 				byte_count);
 	}
@@ -4017,9 +4090,13 @@ namespace
 
 		*transferred = static_cast<u32>(received);
 		if (received > 0)
+		{
+			s_net_sockets[channel].bytes_received += *transferred;
+			s_net_sockets[channel].receive_count++;
 			QueuePendingDbufByteWriteChunked(0x1000, address, buffer.data(), *transferred);
+		}
 
-		if (FW_NET_LOGS)
+		if (NetLogsEnabled())
 		{
 			Console.WriteLn("FW NET: received channel=%u bytes=%u", channel, *transferred);
 			if (*transferred != 0)
@@ -4115,7 +4192,7 @@ namespace
 		WriteBe16(*response, 4);
 		WriteBe32(*response, server_address[0] << 24 | server_address[1] << 16 | server_address[2] << 8 | server_address[3]);
 
-		if (FW_NET_LOGS)
+		if (NetLogsEnabled())
 		{
 			Console.WriteLn("FW NET: DNS answer %u.%u.%u.%u", server_address[0], server_address[1], server_address[2],
 				server_address[3]);
@@ -4243,7 +4320,7 @@ namespace
 				packet.source_ip = ByteSwap32(peer_ip);
 				packet.source_port = 0;
 				s_net_rx_packets[channel].push_back(std::move(packet));
-				if (FW_NET_LOGS)
+				if (NetLogsEnabled())
 					Console.WriteLn("FW NET: queued ICMP echo reply channel=%u bytes=%u", channel, byte_count);
 			}
 			return;
@@ -4256,7 +4333,10 @@ namespace
 			packet.data = std::move(response);
 			packet.source_ip = dns_server_ip;
 			packet.source_port = 53;
+			const size_t reply_bytes = packet.data.size();
 			s_net_rx_packets[channel].push_back(std::move(packet));
+			if (NetLogsEnabled())
+				Console.WriteLn("FW NET: queued DNS reply channel=%u bytes=%zu", channel, reply_bytes);
 		}
 	}
 
@@ -4270,7 +4350,7 @@ namespace
 
 	void LogNetCommand(const char* verdict, u32 channel, u32 command, const u32* payload, u32 payload_quads)
 	{
-		if (!FW_NET_LOGS)
+		if (!NetLogsEnabled())
 			return;
 
 		Console.WriteLn("FW NET: %s channel=%u command=0x%02x quads=%u %s", verdict, channel, command, payload_quads,
@@ -4286,11 +4366,8 @@ namespace
 		if (!ReadIopMemory(address, buffer.data(), byte_count))
 			return;
 
-		std::string text;
-		text.reserve(byte_count);
-		for (const u8 value : buffer)
-			text += (value >= 0x20 && value < 0x7f) ? static_cast<char>(value) : (value == 0x0a ? static_cast<char>(0x0a) : static_cast<char>(0x2e));
-		Console.WriteLn("FW NET: out channel=%u command=0x%02x bytes=%u\n%s", channel, command, byte_count, text.c_str());
+		Console.WriteLn("FW NET: out channel=%u command=0x%02x bytes=%u\n%s", channel, command, byte_count,
+			BuildNetBufferText(buffer.data(), byte_count).c_str());
 	}
 
 	bool HleNetCommand(u32 command_offset, const u32* payload, u32 payload_quads)
@@ -4341,13 +4418,13 @@ namespace
 		{
 			if (payload_quads < 4 || !TryGetNetProperty(payload[1], payload[3], &property_response, &property_response_bytes))
 			{
-				if (FW_NET_LOGS)
+				if (NetLogsEnabled())
 					Console.WriteLn("FW NET: property REFUSED channel=%u property=0x%x requested=0x%x", channel,
 						payload_quads >= 2 ? payload[1] : 0, payload_quads >= 4 ? payload[3] : 0);
 				return false;
 			}
 
-			if (FW_NET_LOGS)
+			if (NetLogsEnabled())
 			{
 				std::string bytes;
 				for (u32 index = 0; index < property_response_bytes; index++)
@@ -4432,7 +4509,7 @@ namespace
 			}
 		}
 
-		if (FW_NET_LOGS && (command == 0x14 || command == 0x15) && payload_quads >= 4)
+		if (NetLogsEnabled() && (command == 0x14 || command == 0x15) && payload_quads >= 4)
 			LogNetOutboundBuffer(channel, command, payload[2], payload[3]);
 
 		PendingNetPacket received_packet;
@@ -4469,6 +4546,15 @@ namespace
 			response[1] = ByteSwap32(property_response_bytes);
 		QueuePendingDbufBlockWrite(0xfffe, KONAMI_NET_RESPONSE_OFFSET_BASE + channel * KONAMI_NET_RESPONSE_STRIDE,
 			response.data(), static_cast<u32>(response.size()));
+
+		const size_t pending_quads = FireWire::GetPendingRemoteWriteQuads();
+		if (pending_quads >= NET_BACKLOG_WARN_QUADS && !s_net_sockets[channel].backlog_reported)
+		{
+			s_net_sockets[channel].backlog_reported = true;
+			Console.Warning("FW NET: channel=%u command=0x%x response is queued behind %zu pending quads",
+				channel, command, pending_quads);
+		}
+
 		FlushPendingDbufR0RxPacket();
 		return true;
 	}
@@ -4627,7 +4713,7 @@ namespace
 	bool TryHleKonamiCommand(u64 offset, const u32* payload, u32 payload_quads)
 	{
 		const u32 command_offset = offset & 0xfff;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled())
 			DevCon.WriteLn("FW HLE: TryHleKonamiCommand offset=0x%llx command_offset=0x%x payload_quads=0x%x", offset, command_offset, payload_quads);
 		if (command_offset != KONAMI_CF_COMMAND_OFFSET && command_offset != KONAMI_ATA_COMMAND_OFFSET && payload_quads >= 1)
 		{
@@ -4713,7 +4799,7 @@ namespace
 		const u32 p5 = payload_quads > 5 ? payload[5] : 0;
 		const u32 p6 = payload_quads > 6 ? payload[6] : 0;
 		const u32 p7 = payload_quads > 7 ? payload[7] : 0;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled())
 			DevCon.WriteLn("FW HLE: Konami command off=0x%x subop=0x%x w1=0x%x w2=0x%x w3=0x%x w4=0x%x w5=0x%x w6=0x%x w7=0x%x",
 				command_offset, subop, sector, count, dest, p4, p5, p6, p7);
 
@@ -4741,7 +4827,7 @@ namespace
 			QueuePendingDbufQuadWrite(0xfffe, KONAMI_ATA_STATUS_OFFSET, ByteSwap32(status));
 			return true;
 		}
-		else if (FW_VERBOSE_LOGS)
+		else if (DetailLogsEnabled())
 		{
 			DevCon.WriteLn("FW HLE: unhandled Konami command off=0x%x subop=0x%x w1=0x%x sector=0x%x count=0x%x dest=0x%x p4=0x%x p5=0x%x p6=0x%x p7=0x%x",
 				command_offset, subop, ata_device, sector, count, dest, p4, p5, p6, p7);
@@ -4756,6 +4842,8 @@ namespace
 		if (s_host)
 			s_host->ClearEvent();
 		s_uart_rx_fifo.clear();
+		s_popn_last_reader_frame.clear();
+		s_popn_repeated_frame_count = 0;
 		for (auto& packets : s_net_rx_packets)
 			packets.clear();
 		for (u32 channel = 0; channel < KONAMI_NET_CHANNEL_COUNT; channel++)
@@ -4826,10 +4914,23 @@ namespace
 		sw.Do(&adpcm.filter_initialized);
 	}
 
+	void RefreshPython1LogLevel()
+	{
+		const u32 level = static_cast<u32>(Host::GetIntSettingValue(PYTHON1_GAME_CONFIG_SECTION,
+			PYTHON1_LOG_LEVEL_KEY, static_cast<int>(FireWire::LogLevelNormal)));
+		if (level == FireWire::GetLogLevel())
+			return;
+
+		FireWire::SetLogLevel(level);
+		if (NetLogsEnabled())
+			Console.WriteLn("FW HLE: Python 1 log level %u", level);
+	}
+
 	bool KonamiPython1Device::Open(FireWire::FireWireDeviceHost& host)
 	{
 		s_host = &host;
 		s_device = this;
+		RefreshPython1LogLevel();
 		CloseHddImageFile();
 		CloseCfImageFile();
 		LoadBootrom();
@@ -4862,6 +4963,7 @@ namespace
 
 	void KonamiPython1Device::Reset()
 	{
+		RefreshPython1LogLevel();
 		SoftResetRuntimeState();
 	}
 
@@ -4955,7 +5057,7 @@ namespace
 
 	void ServicePopnNetStateLog()
 	{
-		if (!FW_NET_LOGS || GetPython1IOMode() != Python1IOMode::POPN)
+		if (!NetLogsEnabled() || GetPython1IOMode() != Python1IOMode::POPN)
 			return;
 
 		u32 state = 0;

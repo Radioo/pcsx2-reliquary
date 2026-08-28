@@ -59,6 +59,18 @@ namespace FireWire
 	void CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface& src_si, bool copy_bindings = true);
 	void SetDefaultConfiguration(SettingsInterface* si);
 	bool DoState(StateWrapper& sw);
+
+	enum : u32
+	{
+		LogLevelQuiet = 0,
+		LogLevelNormal = 1,
+		LogLevelDetail = 2,
+		LogLevelTrace = 3,
+	};
+
+	u32 GetLogLevel();
+	void SetLogLevel(u32 level);
+	size_t GetPendingRemoteWriteQuads();
 }
 
 #define FW_BASE                 0x1f808400

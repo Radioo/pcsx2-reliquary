@@ -25,7 +25,13 @@ s8* fwregs;
 
 namespace
 {
-	constexpr bool FW_VERBOSE_LOGS = false;
+	u32 s_log_level = FireWire::LogLevelNormal;
+
+	bool TraceLogsEnabled()
+	{
+		return s_log_level >= FireWire::LogLevelTrace;
+	}
+
 	constexpr u32 FW_BUS_RESET_LOG_LIMIT = 4;
 	constexpr u32 FW_DISCOVERY_LOG_LIMIT = 16;
 	constexpr u32 FW_UBUF_LOG_LIMIT = 32;
@@ -122,7 +128,7 @@ namespace
 	{
 		s_ubuf_rx_fifo.push_back(value);
 		UpdateUbufRxLevel();
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: UBUF rx queue value=0x%x level=%zu", value, s_ubuf_rx_fifo.size());
 	}
 
@@ -134,7 +140,7 @@ namespace
 		u32 value = s_ubuf_rx_fifo.front();
 		s_ubuf_rx_fifo.erase(s_ubuf_rx_fifo.begin());
 		UpdateUbufRxLevel();
-		if (FW_VERBOSE_LOGS && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: UBUF rx pop value=0x%x remaining=%zu", value, s_ubuf_rx_fifo.size());
 		return value;
 	}
@@ -156,7 +162,7 @@ namespace
 		s_dbuf_r0_rx_fifo.erase(s_dbuf_r0_rx_fifo.begin());
 		UpdateDbufR0RxLevel();
 		const bool became_empty = s_dbuf_r0_rx_fifo.empty();
-		if (FW_VERBOSE_LOGS && became_empty && ShouldLogLimited(s_dbuf_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
+		if (TraceLogsEnabled() && became_empty && ShouldLogLimited(s_dbuf_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: DBUF R0 rx pop value=0x%x remaining=%zu", value, s_dbuf_r0_rx_fifo.size());
 		if (became_empty)
 			FlushPendingDbufR0RxPacket();
@@ -230,7 +236,7 @@ namespace
 		const u32 tlabel = (request_header >> 10) & 0x3f;
 		const u32 dest_node = request_offset_high >> 16;
 		const u32 bus_id = dest_node >> 6;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: queue UBUF WRITE_RESPONSE req_hdr=0x%x tlabel=0x%x dest_node=0x%x bus=0x%x", request_header, tlabel, dest_node, bus_id);
 
 		QueueUbufRx((bus_id << 22) | (REMOTE_RESPONSE_SPEED << 16) | (tlabel << 10) | (1u << 8) | (IEEE1394_TCODE_WRITE_RESPONSE << 4));
@@ -243,7 +249,7 @@ namespace
 	void AckTransmit(u32 ack)
 	{
 		fwRu32(FW_ACK_STAT) = ack << 28;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: tx ack ack=0x%x ack_status=0x%x", ack, fwRu32(FW_ACK_STAT));
 		RaiseIntr0(FW_INTR0_AckRcvd);
 	}
@@ -252,7 +258,7 @@ namespace
 	{
 		const u32 tlabel = (request_header >> 10) & 0x3f;
 		const u32 bus_id = dest_node >> 6;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: queue UBUF READQ_RESPONSE req_hdr=0x%x tlabel=0x%x dest_node=0x%x bus=0x%x value=0x%x", request_header, tlabel, dest_node, bus_id, value);
 
 		QueueUbufRx((bus_id << 22) | (REMOTE_RESPONSE_SPEED << 16) | (tlabel << 10) | (1u << 8) | (IEEE1394_TCODE_READQ_RESPONSE << 4));
@@ -363,7 +369,7 @@ namespace
 		{
 			const PendingDbufDmaWrite& dma = s_pending_dbuf_r0_rx_dma.front();
 			const bool dma_written = iopMemSafeWriteBytes(dma.dest, dma.data.data(), static_cast<u32>(dma.data.size()));
-			if (FW_VERBOSE_LOGS)
+			if (TraceLogsEnabled() && ShouldLogLimited(s_remote_write_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
 				DevCon.WriteLn("FW HLE: FireWire DMA WRITEB off_hi=0x1000 off_low=0x%x bytes=0x%zx ok=%u", dma.dest, dma.data.size(), dma_written ? 1 : 0);
 		}
 
@@ -372,7 +378,7 @@ namespace
 		s_pending_dbuf_r0_rx_fifo.erase(s_pending_dbuf_r0_rx_fifo.begin(), s_pending_dbuf_r0_rx_fifo.begin() + packet_quads);
 		if (!s_pending_dbuf_r0_rx_dma.empty())
 			s_pending_dbuf_r0_rx_dma.erase(s_pending_dbuf_r0_rx_dma.begin());
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_dbuf_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: queued deferred DBUF R0 rx packet quads=0x%zx level=0x%x pending_quads=0x%zx pending_dma=0x%zx", packet_quads, fwRu32(FW_DBUF_FIFO_LV0), s_pending_dbuf_r0_rx_fifo.size(), s_pending_dbuf_r0_rx_dma.size());
 		RaiseIntr0(FW_INTR0_URx);
 	}
@@ -558,7 +564,7 @@ namespace
 
 	void LogRuntimePayloadPreview(const char* prefix, u64 offset, const u32* payload, u32 payload_quads, bool handled)
 	{
-		if (!FW_VERBOSE_LOGS || !ShouldLogLimited(s_remote_write_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
+		if (!TraceLogsEnabled() || !ShouldLogLimited(s_remote_write_log_count, FW_REMOTE_WRITE_LOG_LIMIT))
 			return;
 
 		const u32 p0 = payload_quads > 0 ? payload[0] : 0;
@@ -640,7 +646,7 @@ namespace
 
 		const u32 header = s_ubuf_tx_fifo[0];
 		const u32 tcode = (header >> 4) & 0xf;
-		if (FW_VERBOSE_LOGS)
+		if (TraceLogsEnabled() && ShouldLogLimited(s_ubuf_log_count, FW_UBUF_LOG_LIMIT))
 			DevCon.WriteLn("FW HLE: process UBUF tx quads=%zu hdr=0x%x tcode=0x%x(%s) tlabel=0x%x speed=0x%x",
 				s_ubuf_tx_fifo.size(), header, tcode, TcodeName(tcode), (header >> 10) & 0x3f, (header >> 16) & 0x7);
 
@@ -671,7 +677,7 @@ namespace
 			const u64 offset = ((s_ubuf_tx_fifo[1] & 0xffffull) << 32) | s_ubuf_tx_fifo[2];
 			u32 value = 0;
 			const bool handled = s_active_device && s_active_device->ReadQuadlet(offset, &value);
-			if (FW_VERBOSE_LOGS && ShouldLogLimited(s_discovery_log_count, FW_DISCOVERY_LOG_LIMIT))
+			if (TraceLogsEnabled() && ShouldLogLimited(s_discovery_log_count, FW_DISCOVERY_LOG_LIMIT))
 			{
 				DevCon.WriteLn("FW HLE: UBUF read hdr=0x%x tlabel=0x%x node=0x%x off=0x%llx value=0x%x handled=%u",
 					header, (header >> 10) & 0x3f, node, offset, value, handled ? 1 : 0);
@@ -687,7 +693,7 @@ namespace
 
 	void logFwAction(u32 addr, u32 value, bool write)
 	{
-		if (!FW_VERBOSE_LOGS)
+		if (!TraceLogsEnabled())
 			return;
 
 		DevCon.WriteLn("FW: %s 0x%x: 0x%x", write ? "write" : "read", addr, value);
@@ -943,6 +949,21 @@ void FWwriteDMA(u32* pMem, int size)
 		s_active_device->Write(offset, payload.data(), payload_quads);
 
 	RaiseIntr0(FW_INTR0_PBCntR);
+}
+
+u32 FireWire::GetLogLevel()
+{
+	return s_log_level;
+}
+
+void FireWire::SetLogLevel(u32 level)
+{
+	s_log_level = level;
+}
+
+size_t FireWire::GetPendingRemoteWriteQuads()
+{
+	return s_pending_dbuf_r0_rx_fifo.size();
 }
 
 bool FireWire::DoState(StateWrapper& sw)
