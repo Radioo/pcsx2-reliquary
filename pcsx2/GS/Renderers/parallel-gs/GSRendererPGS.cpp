@@ -225,6 +225,7 @@ bool GSDevicePGS::Init()
 	wsi.set_platform(this);
 	wsi.set_frame_duplication_aware(true, 5);
 	wsi.set_present_wait_latency(1);
+	wsi.set_present_timing_enabled(GSConfig.PGSHighRefreshInsertion != 0);
 
 	bool ret = wsi.init_simple(1, {});
 	if (!ret)
