@@ -1,0 +1,29 @@
+name: 🖥️ Windows Build (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: true
+        default: 'Release AVX2'
+        type: choice
+        options:
+          - 'Release AVX2'
+          - 'Release'
+          - 'Release Clang AVX2'
+          - 'Devel AVX2'
+          - 'Debug AVX2'
+          - 'CMake'
+
+jobs:
+  build_windows_qt:
+    name: "Manual"
+    uses: ./.github/workflows/windows_build_qt.yml
+    with:
+      jobName: ${{ inputs.configuration }}
+      artifactPrefixName: "PCSX2-windows-Qt-x64-manual"
+      configuration: ${{ inputs.configuration }}
+      buildSystem: ${{ inputs.configuration == 'CMake' && 'cmake' || 'msbuild' }}
+      fetchTags: true
+    secrets: inherit
