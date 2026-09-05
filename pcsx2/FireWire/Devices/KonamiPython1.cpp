@@ -109,7 +109,15 @@ namespace
 	constexpr u32 KONAMI_NET_RESPONSE_OFFSET_BASE = 0x000b0000;
 	constexpr u32 KONAMI_NET_RESPONSE_STRIDE = 0x1000;
 	constexpr u32 KONAMI_NET_CHANNEL_COUNT = 8;
-	constexpr u64 POPN_SECURITY_AREA_KEY = 0x9740292336d4331bull;
+	struct PopnSecurityArea
+	{
+		const char* game_code;
+		u64 area_key;
+	};
+	constexpr PopnSecurityArea POPN_SECURITY_AREAS[] = {
+		{"GQC00", 0x9740292336d4331bull},
+		{"GQC20", 0x5f42e6a4a27272f0ull},
+	};
 	constexpr u32 POPN_PCB_ID_LENGTH = 20;
 	constexpr u32 POPN_PCB_ID_ROM_OFFSET = 4;
 	constexpr u8 POPN_PCB_ID_ROM_ORDER[] = {0, 6, 5, 4, 3, 2, 1, 7};
@@ -136,6 +144,8 @@ namespace
 	constexpr u32 KONAMI_NET_SOCKET_TYPE_RAW = 3;
 	constexpr u32 KONAMI_SECURITY_ID_SIZE = 6;
 	constexpr u32 KONAMI_SECURITY_SIGNATURE_OFFSET = 6;
+	constexpr u32 KONAMI_SECURITY_GAME_CODE_OFFSET = 0x10;
+	constexpr u32 KONAMI_SECURITY_GAME_CODE_SIZE = 8;
 	constexpr u8 DES_PERMUTED_CHOICE_1[] = {
 		57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18,
 		10, 2, 59, 51, 43, 35, 27, 19, 11, 3, 60, 52, 44, 36,
@@ -2090,11 +2100,29 @@ namespace
 			desEncryptBlock(&context, input, output);
 	}
 
-	void BuildPopnSecuritySignature(const u8* id, u8* signature)
+	std::optional<u64> FindPopnSecurityAreaKey(const u8* record)
+	{
+		const char* code = reinterpret_cast<const char*>(record + KONAMI_SECURITY_GAME_CODE_OFFSET);
+		for (const PopnSecurityArea& area : POPN_SECURITY_AREAS)
+		{
+			if (std::strncmp(code, area.game_code, KONAMI_SECURITY_GAME_CODE_SIZE) == 0)
+				return area.area_key;
+		}
+
+		return std::nullopt;
+	}
+
+	std::string PopnSecurityGameCodeText(const u8* record)
+	{
+		const char* code = reinterpret_cast<const char*>(record + KONAMI_SECURITY_GAME_CODE_OFFSET);
+		return std::string(code, std::find(code, code + KONAMI_SECURITY_GAME_CODE_SIZE, '\0'));
+	}
+
+	void BuildPopnSecuritySignature(const u8* id, u64 area_key, u8* signature)
 	{
 		u8 key[DES_BLOCK_SIZE];
 		for (u32 index = 0; index < sizeof(key); index++)
-			key[index] = static_cast<u8>(POPN_SECURITY_AREA_KEY >> (index * 8));
+			key[index] = static_cast<u8>(area_key >> (index * 8));
 
 		u8 key_a[DES_BLOCK_SIZE];
 		u8 seed[DES_BLOCK_SIZE];
@@ -2122,12 +2150,17 @@ namespace
 		std::copy_n(third, KONAMI_SECURITY_ID_SIZE, signature);
 	}
 
-	std::string BuildPopnPcbIdString(const std::string& prefix, const u8* rom)
+	std::string BuildPopnPcbIdRomDigits(const u8* rom)
 	{
-		std::string text = prefix;
+		std::string text;
 		for (const u8 rom_index : POPN_PCB_ID_ROM_ORDER)
 			text += StringUtil::StdStringFromFormat("%02X", rom[rom_index]);
 		return text;
+	}
+
+	std::string BuildPopnPcbIdString(const std::string& prefix, const u8* rom)
+	{
+		return prefix + BuildPopnPcbIdRomDigits(rom);
 	}
 
 	void UpdateDallasKeyResponseFromBootrom()
@@ -2144,51 +2177,65 @@ namespace
 		}
 	}
 
+	bool PatchPopnPcbIdPrefixAt(u32 address, const std::string& prefix)
+	{
+		u8 current[POPN_PCB_ID_PREFIX_LENGTH] = {};
+		if (!ReadEeMemory(address, current, sizeof(current)))
+			return false;
+
+		for (const u8 value : current)
+		{
+			if (std::isxdigit(value) == 0)
+				return false;
+		}
+
+		if (std::memcmp(current, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH) == 0)
+			return true;
+
+		if (!WriteEeMemory(address, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH))
+			return false;
+
+		Console.WriteLn("FW HLE: patched pop'n PCB ID prefix at 0x%08x to %s", address, prefix.c_str());
+		return true;
+	}
+
 	bool PatchPopnPcbIdPrefixInEeMemory(const std::string& prefix)
 	{
-		const std::string tail(POPN_PCB_ID_FORMAT_TAIL);
-		const u32 tail_size = static_cast<u32>(tail.size());
-		std::vector<u8> window(POPN_EE_SCAN_CHUNK + tail_size + POPN_PCB_ID_PREFIX_LENGTH);
+		const std::array<std::string, 2> needles = {
+			std::string(POPN_PCB_ID_FORMAT_TAIL),
+			BuildPopnPcbIdRomDigits(s_dallas_dongle_slots[0].data()),
+		};
+
+		u32 longest = 0;
+		for (const std::string& needle : needles)
+			longest = std::max(longest, static_cast<u32>(needle.size()));
+
+		std::vector<u8> window(POPN_EE_SCAN_CHUNK + longest);
+		bool patched = false;
 
 		for (u32 base = POPN_EE_SCAN_BASE; base < POPN_EE_SCAN_BASE + POPN_EE_SCAN_SIZE; base += POPN_EE_SCAN_CHUNK)
 		{
-			const u32 size = POPN_EE_SCAN_CHUNK + tail_size;
-			if (!ReadEeMemory(base, window.data(), size))
+			if (!ReadEeMemory(base, window.data(), POPN_EE_SCAN_CHUNK + longest))
 				continue;
 
 			for (u32 offset = 0; offset < POPN_EE_SCAN_CHUNK; offset++)
 			{
-				if (std::memcmp(window.data() + offset, tail.c_str(), tail_size) != 0)
+				const u32 address = base + offset;
+				if (address < POPN_EE_SCAN_BASE + POPN_PCB_ID_PREFIX_LENGTH)
 					continue;
 
-				const u32 tail_address = base + offset;
-				if (tail_address < POPN_EE_SCAN_BASE + POPN_PCB_ID_PREFIX_LENGTH)
-					continue;
+				for (const std::string& needle : needles)
+				{
+					if (std::memcmp(window.data() + offset, needle.c_str(), needle.size()) != 0)
+						continue;
 
-				u8 current[POPN_PCB_ID_PREFIX_LENGTH] = {};
-				const u32 prefix_address = tail_address - POPN_PCB_ID_PREFIX_LENGTH;
-				if (!ReadEeMemory(prefix_address, current, sizeof(current)))
-					continue;
-
-				bool looks_like_prefix = true;
-				for (const u8 value : current)
-					looks_like_prefix &= std::isxdigit(value) != 0;
-
-				if (!looks_like_prefix)
-					continue;
-
-				if (std::memcmp(current, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH) == 0)
-					return true;
-
-				if (!WriteEeMemory(prefix_address, prefix.c_str(), POPN_PCB_ID_PREFIX_LENGTH))
-					return false;
-
-				Console.WriteLn("FW HLE: patched pop'n PCB ID prefix at 0x%08x to %s", prefix_address, prefix.c_str());
-				return true;
+					patched |= PatchPopnPcbIdPrefixAt(address - POPN_PCB_ID_PREFIX_LENGTH, prefix);
+					break;
+				}
 			}
 		}
 
-		return false;
+		return patched;
 	}
 
 	void ApplyPopnPcbId()
@@ -2237,19 +2284,34 @@ namespace
 		std::copy(rom.begin(), rom.end(), s_dallas_dongle_slots[0].data());
 		s_dallas_dongle_loaded[0] = true;
 
+		u32 signed_records = 0;
 		for (u32 offset = 0xf000; offset <= BOOTROM_SIZE - 0x20; offset += 0x10)
 		{
 			u8* record = s_bootrom + offset;
 			if (record[0x10] != 'G' || record[0x1a] != 'J' || record[0x1b] != 'A')
 				continue;
 
+			const std::optional<u64> area_key = FindPopnSecurityAreaKey(record);
+			if (!area_key.has_value())
+			{
+				Console.Error("FW HLE: no area key known for security record '%s' at 0x%x, leaving it unsigned",
+					PopnSecurityGameCodeText(record).c_str(), offset);
+				continue;
+			}
+
 			std::copy_n(rom.data() + 1, KONAMI_SECURITY_ID_SIZE, record);
-			BuildPopnSecuritySignature(record, record + KONAMI_SECURITY_SIGNATURE_OFFSET);
-			Console.WriteLn("FW HLE: pop'n PCB ID set to %s", BuildPopnPcbIdString(prefix, rom.data()).c_str());
+			BuildPopnSecuritySignature(record, area_key.value(), record + KONAMI_SECURITY_SIGNATURE_OFFSET);
+			signed_records++;
+		}
+
+		if (signed_records == 0)
+		{
+			Console.Error("FW HLE: no signable security record found in the boot ROM, PcbId ignored");
 			return;
 		}
 
-		Console.Error("FW HLE: no security record found in the boot ROM, PcbId ignored");
+		Console.WriteLn("FW HLE: pop'n PCB ID set to %s across %u security record(s)",
+			BuildPopnPcbIdString(prefix, rom.data()).c_str(), signed_records);
 	}
 
 	bool EnsureParentDirectoryForFile(const std::string& path)
