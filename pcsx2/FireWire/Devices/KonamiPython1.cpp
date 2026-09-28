@@ -109,6 +109,18 @@ namespace
 	constexpr u32 KONAMI_NET_RESPONSE_OFFSET_BASE = 0x000b0000;
 	constexpr u32 KONAMI_NET_RESPONSE_STRIDE = 0x1000;
 	constexpr u32 KONAMI_NET_CHANNEL_COUNT = 8;
+	constexpr u32 KONAMI_NET_SOCKET_COUNT = 32;
+	constexpr u32 KONAMI_NET_SOCKET_FIELD_SHIFT = 16;
+	constexpr u32 KONAMI_NET_PORT_FIELD_MASK = 0xffff;
+	constexpr u32 EEMALL_DISCOVERY_PORT_FIELD = 0x3343;
+	constexpr u32 EEMALL_CHALLENGE_BYTES = 16;
+	constexpr u32 EEMALL_CHALLENGE_HEADER_BYTES = 2;
+	constexpr u8 EEMALL_CHALLENGE_TAG = 0x0c;
+	constexpr u8 EEMALL_ANSWER_TAG = 0x33;
+	constexpr u8 EEMALL_CHALLENGE_KEY[] = {
+		0x82, 0x89, 0x05, 0xe0, 0x26, 0x53, 0x69, 0xb4, 0x17, 0x4e, 0x4f, 0x46, 0x06, 0x95,
+	};
+	static_assert(EEMALL_CHALLENGE_HEADER_BYTES + std::size(EEMALL_CHALLENGE_KEY) == EEMALL_CHALLENGE_BYTES);
 	struct PopnSecurityArea
 	{
 		const char* game_code;
@@ -608,7 +620,7 @@ namespace
 	bool s_cf_fatfs_mounted = false;
 	bool s_cf_pythonfs_file_open = false;
 	bool s_pythonfs_formatted = false;
-	std::vector<PendingNetPacket> s_net_rx_packets[KONAMI_NET_CHANNEL_COUNT];
+	std::vector<PendingNetPacket> s_net_rx_packets[KONAMI_NET_SOCKET_COUNT];
 	std::string s_net_server_url;
 	std::array<u8, 4> s_net_server_address = {};
 	u16 s_net_server_port = 80;
@@ -626,15 +638,18 @@ namespace
 	struct Python1NetSocket
 	{
 		NetSocket handle = NET_INVALID_SOCKET;
+		bool is_open = false;
 		bool is_stream = false;
 		bool is_raw = false;
+		u32 raw_peer_ip = 0;
+		u32 bound_port_field = 0;
 		u32 bytes_sent = 0;
 		u32 bytes_received = 0;
 		u32 receive_count = 0;
 		bool backlog_reported = false;
 	};
 
-	Python1NetSocket s_net_sockets[KONAMI_NET_CHANNEL_COUNT];
+	Python1NetSocket s_net_sockets[KONAMI_NET_SOCKET_COUNT];
 
 	enum class Python1NetPendingKind : u8
 	{
@@ -647,6 +662,7 @@ namespace
 	struct Python1NetPendingOperation
 	{
 		Python1NetPendingKind kind = Python1NetPendingKind::None;
+		u32 socket_id = 0;
 		u32 address = 0;
 		u32 byte_count = 0;
 		std::vector<u8> send_buffer;
@@ -3964,9 +3980,9 @@ namespace
 		return true;
 	}
 
-	bool IsNetChannelReadable(u32 channel)
+	bool IsNetSocketReadable(u32 socket_id)
 	{
-		const NetSocket handle = s_net_sockets[channel].handle;
+		const NetSocket handle = s_net_sockets[socket_id].handle;
 		if (handle == NET_INVALID_SOCKET)
 			return false;
 
@@ -3978,9 +3994,9 @@ namespace
 		return select(static_cast<int>(handle) + 1, &read_set, nullptr, nullptr, &timeout) > 0;
 	}
 
-	void CloseNetChannelSocket(u32 channel)
+	void CloseNetSocket(u32 socket_id)
 	{
-		Python1NetSocket& socket_state = s_net_sockets[channel];
+		Python1NetSocket& socket_state = s_net_sockets[socket_id];
 		if (socket_state.handle != NET_INVALID_SOCKET)
 		{
 #ifdef _WIN32
@@ -3989,23 +4005,25 @@ namespace
 			close(socket_state.handle);
 #endif
 			if (NetLogsEnabled())
-				Console.WriteLn("FW NET: closed host socket channel=%u", channel);
+				Console.WriteLn("FW NET: closed host socket=%u", socket_id);
 		}
 
 		if (NetLogsEnabled() && (socket_state.bytes_sent != 0 || socket_state.bytes_received != 0))
 		{
-			Console.WriteLn("FW NET: channel=%u finished after %u bytes sent, %u bytes received in %u reads",
-				channel, socket_state.bytes_sent, socket_state.bytes_received, socket_state.receive_count);
+			Console.WriteLn("FW NET: socket=%u finished after %u bytes sent, %u bytes received in %u reads",
+				socket_id, socket_state.bytes_sent, socket_state.bytes_received, socket_state.receive_count);
 		}
 
 		socket_state.handle = NET_INVALID_SOCKET;
 		socket_state.is_stream = false;
 		socket_state.is_raw = false;
+		socket_state.raw_peer_ip = 0;
+		socket_state.bound_port_field = 0;
 		socket_state.bytes_sent = 0;
 		socket_state.bytes_received = 0;
 		socket_state.receive_count = 0;
 		socket_state.backlog_reported = false;
-		s_net_rx_packets[channel].clear();
+		s_net_rx_packets[socket_id].clear();
 	}
 
 	bool SetNetSocketNonBlocking(NetSocket handle)
@@ -4029,9 +4047,9 @@ namespace
 #endif
 	}
 
-	bool IsNetChannelWritable(u32 channel)
+	bool IsNetSocketWritable(u32 socket_id)
 	{
-		const NetSocket handle = s_net_sockets[channel].handle;
+		const NetSocket handle = s_net_sockets[socket_id].handle;
 		if (handle == NET_INVALID_SOCKET)
 			return false;
 
@@ -4056,7 +4074,7 @@ namespace
 		return error;
 	}
 
-	void CloseNetChannelSocketHandle(NetSocket handle)
+	void CloseNetHostSocketHandle(NetSocket handle)
 	{
 #ifdef _WIN32
 		closesocket(handle);
@@ -4072,17 +4090,17 @@ namespace
 		Failed,
 	};
 
-	Python1NetConnectResult BeginConnectNetChannelToServer(u32 channel)
+	Python1NetConnectResult BeginConnectNetSocketToServer(u32 socket_id)
 	{
-		if (!s_net_sockets[channel].is_stream)
+		if (!s_net_sockets[socket_id].is_stream)
 			return Python1NetConnectResult::Failed;
 
 		std::array<u8, 4> address = {};
 		if (!TryGetPython1ServerAddress(&address))
 			return IsPython1ServerResolvePending() ? Python1NetConnectResult::InProgress : Python1NetConnectResult::Failed;
 
-		CloseNetChannelSocket(channel);
-		s_net_sockets[channel].is_stream = true;
+		CloseNetSocket(socket_id);
+		s_net_sockets[socket_id].is_stream = true;
 
 		const NetSocket handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (handle == NET_INVALID_SOCKET)
@@ -4090,7 +4108,7 @@ namespace
 
 		if (!SetNetSocketNonBlocking(handle))
 		{
-			CloseNetChannelSocketHandle(handle);
+			CloseNetHostSocketHandle(handle);
 			return Python1NetConnectResult::Failed;
 		}
 
@@ -4099,11 +4117,11 @@ namespace
 		target.sin_port = htons(s_net_server_port);
 		std::memcpy(&target.sin_addr, address.data(), address.size());
 
-		s_net_sockets[channel].handle = handle;
+		s_net_sockets[socket_id].handle = handle;
 
 		if (connect(handle, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) == 0)
 		{
-			Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, address[0], address[1],
+			Console.WriteLn("FW NET: connected socket=%u to %u.%u.%u.%u:%u", socket_id, address[0], address[1],
 				address[2], address[3], s_net_server_port);
 			return Python1NetConnectResult::Connected;
 		}
@@ -4111,31 +4129,31 @@ namespace
 		if (WouldBlockNetSocket())
 		{
 			if (NetLogsEnabled())
-				Console.WriteLn("FW NET: connect in progress channel=%u to %u.%u.%u.%u:%u", channel, address[0],
+				Console.WriteLn("FW NET: connect in progress socket=%u to %u.%u.%u.%u:%u", socket_id, address[0],
 					address[1], address[2], address[3], s_net_server_port);
 			return Python1NetConnectResult::InProgress;
 		}
 
 		Console.Error("FW NET: connect to %u.%u.%u.%u:%u failed", address[0], address[1], address[2], address[3],
 			s_net_server_port);
-		CloseNetChannelSocket(channel);
+		CloseNetSocket(socket_id);
 		return Python1NetConnectResult::Failed;
 	}
 
-	bool FinishConnectNetChannel(u32 channel)
+	bool FinishConnectNetSocket(u32 socket_id)
 	{
-		const NetSocket handle = s_net_sockets[channel].handle;
+		const NetSocket handle = s_net_sockets[socket_id].handle;
 		if (handle == NET_INVALID_SOCKET)
 			return false;
 
 		if (GetNetSocketError(handle) != 0)
 		{
-			Console.Error("FW NET: connect failed channel=%u", channel);
-			CloseNetChannelSocket(channel);
+			Console.Error("FW NET: connect failed socket=%u", socket_id);
+			CloseNetSocket(socket_id);
 			return false;
 		}
 
-		Console.WriteLn("FW NET: connected channel=%u to %u.%u.%u.%u:%u", channel, s_net_server_address[0],
+		Console.WriteLn("FW NET: connected socket=%u to %u.%u.%u.%u:%u", socket_id, s_net_server_address[0],
 			s_net_server_address[1], s_net_server_address[2], s_net_server_address[3], s_net_server_port);
 		return true;
 	}
@@ -4170,9 +4188,9 @@ namespace
 		Failed,
 	};
 
-	Python1NetTransferResult SendNetChannelBuffer(u32 channel, Python1NetPendingOperation& operation)
+	Python1NetTransferResult SendNetSocketBuffer(u32 socket_id, Python1NetPendingOperation& operation)
 	{
-		const NetSocket handle = s_net_sockets[channel].handle;
+		const NetSocket handle = s_net_sockets[socket_id].handle;
 		if (handle == NET_INVALID_SOCKET)
 			return Python1NetTransferResult::Failed;
 
@@ -4184,25 +4202,25 @@ namespace
 			if (sent > 0)
 			{
 				operation.send_offset += static_cast<u32>(sent);
-				s_net_sockets[channel].bytes_sent += static_cast<u32>(sent);
+				s_net_sockets[socket_id].bytes_sent += static_cast<u32>(sent);
 				continue;
 			}
 
 			if (sent < 0 && WouldBlockNetSocket())
 				return Python1NetTransferResult::InProgress;
 
-			Console.Error("FW NET: send failed channel=%u bytes=%u", channel, remaining);
+			Console.Error("FW NET: send failed socket=%u bytes=%u", socket_id, remaining);
 			return Python1NetTransferResult::Failed;
 		}
 
 		if (NetLogsEnabled())
-			Console.WriteLn("FW NET: sent channel=%u bytes=%u", channel, operation.send_offset);
+			Console.WriteLn("FW NET: sent socket=%u bytes=%u", socket_id, operation.send_offset);
 		return Python1NetTransferResult::Complete;
 	}
 
-	bool BeginSendNetChannelBuffer(u32 channel, u32 address, u32 byte_count, Python1NetPendingOperation& operation)
+	bool BeginSendNetSocketBuffer(u32 socket_id, u32 address, u32 byte_count, Python1NetPendingOperation& operation)
 	{
-		if (s_net_sockets[channel].handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
+		if (s_net_sockets[socket_id].handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
 			return false;
 
 		operation.send_buffer.resize(byte_count);
@@ -4225,10 +4243,11 @@ namespace
 		}
 	}
 
-	void BeginPendingNetOperation(u32 channel, Python1NetPendingKind kind, u32 address, u32 byte_count)
+	void BeginPendingNetOperation(u32 channel, u32 socket_id, Python1NetPendingKind kind, u32 address, u32 byte_count)
 	{
 		Python1NetPendingOperation& operation = s_net_pending_operations[channel];
 		operation.kind = kind;
+		operation.socket_id = socket_id;
 		operation.address = address;
 		operation.byte_count = byte_count;
 		operation.timeout_cycle = GetCurrentCycle() +
@@ -4236,13 +4255,13 @@ namespace
 		ScheduleDeviceEvent();
 
 		if (NetLogsEnabled())
-			Console.WriteLn("FW NET: deferred %s channel=%u bytes=%u", GetPendingNetOperationName(kind), channel,
-				byte_count);
+			Console.WriteLn("FW NET: deferred %s channel=%u socket=%u bytes=%u", GetPendingNetOperationName(kind),
+				channel, socket_id, byte_count);
 	}
 
-	Python1NetTransferResult ReceiveNetChannelStream(u32 channel, u32 address, u32 byte_count, u32* transferred)
+	Python1NetTransferResult ReceiveNetSocketStream(u32 socket_id, u32 address, u32 byte_count, u32* transferred)
 	{
-		const NetSocket handle = s_net_sockets[channel].handle;
+		const NetSocket handle = s_net_sockets[socket_id].handle;
 		if (handle == NET_INVALID_SOCKET || address == 0 || byte_count == 0 || byte_count > 0x2000)
 			return Python1NetTransferResult::Failed;
 
@@ -4253,21 +4272,21 @@ namespace
 			if (WouldBlockNetSocket())
 				return Python1NetTransferResult::InProgress;
 
-			Console.Error("FW NET: recv failed channel=%u", channel);
+			Console.Error("FW NET: recv failed socket=%u", socket_id);
 			return Python1NetTransferResult::Failed;
 		}
 
 		*transferred = static_cast<u32>(received);
 		if (received > 0)
 		{
-			s_net_sockets[channel].bytes_received += *transferred;
-			s_net_sockets[channel].receive_count++;
+			s_net_sockets[socket_id].bytes_received += *transferred;
+			s_net_sockets[socket_id].receive_count++;
 			QueuePendingDbufByteWriteChunked(0x1000, address, buffer.data(), *transferred);
 		}
 
 		if (NetLogsEnabled())
 		{
-			Console.WriteLn("FW NET: received channel=%u bytes=%u", channel, *transferred);
+			Console.WriteLn("FW NET: received socket=%u bytes=%u", socket_id, *transferred);
 			if (*transferred != 0)
 				LogNetBufferText(buffer.data(), *transferred);
 		}
@@ -4463,9 +4482,31 @@ namespace
 		return true;
 	}
 
-	void MaybeQueueNetReply(u32 channel, const u32* payload, u32 payload_quads)
+	bool BuildEeMallDiscoveryAnswer(const u8* request, u32 request_bytes, std::vector<u8>* response)
 	{
-		if (channel >= KONAMI_NET_CHANNEL_COUNT || payload_quads < 4 || payload[3] == 0)
+		if (request_bytes != EEMALL_CHALLENGE_BYTES || request[0] != EEMALL_CHALLENGE_TAG)
+			return false;
+
+		response->assign(request, request + request_bytes);
+		(*response)[1] = EEMALL_ANSWER_TAG;
+		for (u32 index = 0; index < std::size(EEMALL_CHALLENGE_KEY); index++)
+			(*response)[EEMALL_CHALLENGE_HEADER_BYTES + index] ^= EEMALL_CHALLENGE_KEY[index];
+		return true;
+	}
+
+	u32 FindNetSocketBoundTo(u32 port_field)
+	{
+		for (u32 socket_id = 0; socket_id < KONAMI_NET_SOCKET_COUNT; socket_id++)
+		{
+			if (s_net_sockets[socket_id].is_open && s_net_sockets[socket_id].bound_port_field == port_field)
+				return socket_id;
+		}
+		return KONAMI_NET_SOCKET_COUNT;
+	}
+
+	void MaybeQueueNetReply(u32 socket_id, const u32* payload, u32 payload_quads)
+	{
+		if (payload_quads < 4 || payload[3] == 0)
 			return;
 
 		const u32 data_address = payload[2];
@@ -4479,18 +4520,37 @@ namespace
 
 		const u32 dns_server_ip = PackNetAddress(KONAMI_NET_ONLINE_GATEWAY);
 		std::vector<u8> response;
-		if (s_net_sockets[channel].is_raw)
+		if (s_net_sockets[socket_id].is_raw)
 		{
-			const u32 peer_ip = payload_quads >= 6 ? payload[5] : dns_server_ip;
+			const u32 peer_ip = payload[0] == 0x14 ? s_net_sockets[socket_id].raw_peer_ip :
+								payload_quads >= 6               ? payload[5] :
+																   dns_server_ip;
 			if (BuildIcmpEchoReply(request.data(), byte_count, peer_ip, &response))
 			{
 				PendingNetPacket packet;
 				packet.data = std::move(response);
 				packet.source_ip = ByteSwap32(peer_ip);
 				packet.source_port = 0;
-				s_net_rx_packets[channel].push_back(std::move(packet));
+				s_net_rx_packets[socket_id].push_back(std::move(packet));
 				if (NetLogsEnabled())
-					Console.WriteLn("FW NET: queued ICMP echo reply channel=%u bytes=%u", channel, byte_count);
+					Console.WriteLn("FW NET: queued ICMP echo reply socket=%u bytes=%u", socket_id, byte_count);
+			}
+			return;
+		}
+
+		if (payload_quads >= 5 && (payload[4] & KONAMI_NET_PORT_FIELD_MASK) == EEMALL_DISCOVERY_PORT_FIELD &&
+			BuildEeMallDiscoveryAnswer(request.data(), byte_count, &response))
+		{
+			const u32 listener = FindNetSocketBoundTo(EEMALL_DISCOVERY_PORT_FIELD);
+			if (listener < KONAMI_NET_SOCKET_COUNT)
+			{
+				PendingNetPacket packet;
+				packet.data = std::move(response);
+				packet.source_ip = dns_server_ip;
+				packet.source_port = EEMALL_DISCOVERY_PORT_FIELD;
+				s_net_rx_packets[listener].push_back(std::move(packet));
+				if (NetLogsEnabled())
+					Console.WriteLn("FW NET: ee'MALL box answered the discovery challenge on socket=%u", listener);
 			}
 			return;
 		}
@@ -4503,9 +4563,9 @@ namespace
 			packet.source_ip = dns_server_ip;
 			packet.source_port = 53;
 			const size_t reply_bytes = packet.data.size();
-			s_net_rx_packets[channel].push_back(std::move(packet));
+			s_net_rx_packets[socket_id].push_back(std::move(packet));
 			if (NetLogsEnabled())
-				Console.WriteLn("FW NET: queued DNS reply channel=%u bytes=%zu", channel, reply_bytes);
+				Console.WriteLn("FW NET: queued DNS reply socket=%u bytes=%zu", socket_id, reply_bytes);
 		}
 	}
 
@@ -4539,6 +4599,53 @@ namespace
 			BuildNetBufferText(buffer.data(), byte_count).c_str());
 	}
 
+	bool NetCommandUsesSocket(u32 command)
+	{
+		switch (command)
+		{
+			case 0x0c:
+			case 0x0f:
+			case 0x13:
+			case 0x14:
+			case 0x15:
+			case 0x16:
+			case 0x17:
+			case 0x1d:
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	u32 GetNetCommandSocket(u32 command, const u32* payload)
+	{
+		switch (command)
+		{
+			case 0x0c:
+			case 0x0f:
+			case 0x1d:
+				return payload[1];
+			default:
+				return payload[1] >> KONAMI_NET_SOCKET_FIELD_SHIFT;
+		}
+	}
+
+	u32 AllocateNetSocket()
+	{
+		for (u32 socket_id = 0; socket_id < KONAMI_NET_SOCKET_COUNT; socket_id++)
+		{
+			if (s_net_sockets[socket_id].is_open)
+				continue;
+
+			CloseNetSocket(socket_id);
+			s_net_sockets[socket_id].is_open = true;
+			return socket_id;
+		}
+
+		Console.Error("FW NET: all %u sockets are open", KONAMI_NET_SOCKET_COUNT);
+		return KONAMI_NET_SOCKET_COUNT;
+	}
+
 	bool HleNetCommand(u32 command_offset, const u32* payload, u32 payload_quads)
 	{
 		if (command_offset < KONAMI_NET_COMMAND_OFFSET_BASE)
@@ -4563,6 +4670,8 @@ namespace
 			case 5:
 			case 6:
 			case 7:
+			case 8:
+			case 9:
 			case 0x0b:
 			case 0x0c:
 			case 0x0f:
@@ -4608,31 +4717,56 @@ namespace
 		{
 			return false;
 		}
-		else if (command == 0x15)
-		{
-			MaybeQueueNetReply(channel, payload, payload_quads);
-		}
 
+		u32 socket_id = KONAMI_NET_SOCKET_COUNT;
 		if (command == 0x0b && payload_quads >= 3)
 		{
 			s_net_pending_operations[channel] = {};
-			CloseNetChannelSocket(channel);
-			s_net_sockets[channel].is_stream = payload[2] == KONAMI_NET_SOCKET_TYPE_STREAM;
-			s_net_sockets[channel].is_raw = payload[2] == KONAMI_NET_SOCKET_TYPE_RAW;
+			socket_id = AllocateNetSocket();
+			if (socket_id < KONAMI_NET_SOCKET_COUNT)
+			{
+				s_net_sockets[socket_id].is_stream = payload[2] == KONAMI_NET_SOCKET_TYPE_STREAM;
+				s_net_sockets[socket_id].is_raw = payload[2] == KONAMI_NET_SOCKET_TYPE_RAW;
+			}
 		}
+		else if (NetCommandUsesSocket(command))
+		{
+			socket_id = GetNetCommandSocket(command, payload);
+			if (socket_id >= KONAMI_NET_SOCKET_COUNT || !s_net_sockets[socket_id].is_open)
+			{
+				Console.Error("FW NET: channel=%u command=0x%02x names socket=%u, which is not open", channel, command,
+					socket_id);
+				std::array<u32, 8> response = {};
+				response[1] = ByteSwap32(0xffffffff);
+				QueuePendingDbufBlockWrite(0xfffe, KONAMI_NET_RESPONSE_OFFSET_BASE + channel * KONAMI_NET_RESPONSE_STRIDE,
+					response.data(), static_cast<u32>(response.size()));
+				FlushPendingDbufR0RxPacket();
+				return true;
+			}
+		}
+
+		if (command == 0x15 || (command == 0x14 && s_net_sockets[socket_id].is_raw))
+			MaybeQueueNetReply(socket_id, payload, payload_quads);
+
+		if (command == 0x0c && payload_quads >= 3)
+			s_net_sockets[socket_id].bound_port_field = payload[2] & KONAMI_NET_PORT_FIELD_MASK;
 		else if (command == 0x1d)
 		{
 			s_net_pending_operations[channel] = {};
-			CloseNetChannelSocket(channel);
+			CloseNetSocket(socket_id);
+			s_net_sockets[socket_id].is_open = false;
 		}
 
 		bool stream_connected = false;
 		if (command == 0x0f)
 		{
-			const Python1NetConnectResult result = BeginConnectNetChannelToServer(channel);
+			if (s_net_sockets[socket_id].is_raw && payload_quads >= 4)
+				s_net_sockets[socket_id].raw_peer_ip = payload[3];
+
+			const Python1NetConnectResult result = BeginConnectNetSocketToServer(socket_id);
 			if (result == Python1NetConnectResult::InProgress)
 			{
-				BeginPendingNetOperation(channel, Python1NetPendingKind::Connect, 0, 0);
+				BeginPendingNetOperation(channel, socket_id, Python1NetPendingKind::Connect, 0, 0);
 				return true;
 			}
 
@@ -4642,17 +4776,17 @@ namespace
 		u32 stream_transferred = 0;
 		bool stream_transfer_done = false;
 		if ((command == 0x14 || command == 0x16) && payload_quads >= 4 &&
-			s_net_sockets[channel].handle != NET_INVALID_SOCKET)
+			s_net_sockets[socket_id].handle != NET_INVALID_SOCKET)
 		{
 			if (command == 0x16)
 			{
 				Python1NetTransferResult result = Python1NetTransferResult::InProgress;
-				if (IsNetChannelReadable(channel))
-					result = ReceiveNetChannelStream(channel, payload[2], payload[3], &stream_transferred);
+				if (IsNetSocketReadable(socket_id))
+					result = ReceiveNetSocketStream(socket_id, payload[2], payload[3], &stream_transferred);
 
 				if (result == Python1NetTransferResult::InProgress)
 				{
-					BeginPendingNetOperation(channel, Python1NetPendingKind::Receive, payload[2], payload[3]);
+					BeginPendingNetOperation(channel, socket_id, Python1NetPendingKind::Receive, payload[2], payload[3]);
 					return true;
 				}
 
@@ -4661,12 +4795,12 @@ namespace
 			else
 			{
 				Python1NetPendingOperation& operation = s_net_pending_operations[channel];
-				if (BeginSendNetChannelBuffer(channel, payload[2], payload[3], operation))
+				if (BeginSendNetSocketBuffer(socket_id, payload[2], payload[3], operation))
 				{
-					const Python1NetTransferResult result = SendNetChannelBuffer(channel, operation);
+					const Python1NetTransferResult result = SendNetSocketBuffer(socket_id, operation);
 					if (result == Python1NetTransferResult::InProgress)
 					{
-						BeginPendingNetOperation(channel, Python1NetPendingKind::Send, payload[2], payload[3]);
+						BeginPendingNetOperation(channel, socket_id, Python1NetPendingKind::Send, payload[2], payload[3]);
 						return true;
 					}
 
@@ -4683,11 +4817,11 @@ namespace
 
 		PendingNetPacket received_packet;
 		bool has_received_packet = false;
-		if ((command == 0x16 || command == 0x17) && payload_quads >= 4 && !s_net_sockets[channel].is_stream &&
-			!s_net_rx_packets[channel].empty())
+		if ((command == 0x16 || command == 0x17) && payload_quads >= 4 && !s_net_sockets[socket_id].is_stream &&
+			!s_net_rx_packets[socket_id].empty())
 		{
-			received_packet = std::move(s_net_rx_packets[channel].front());
-			s_net_rx_packets[channel].erase(s_net_rx_packets[channel].begin());
+			received_packet = std::move(s_net_rx_packets[socket_id].front());
+			s_net_rx_packets[socket_id].erase(s_net_rx_packets[socket_id].begin());
 			const u32 max_bytes = std::min<u32>(payload[3], 0x2000);
 			if (received_packet.data.size() > max_bytes)
 				received_packet.data.resize(max_bytes);
@@ -4699,6 +4833,15 @@ namespace
 		std::array<u32, 8> response = {};
 		if (command == 7)
 			response[1] = 1;
+		else if (command == 8 || command == 9)
+		{
+			const u8* address = nullptr;
+			u32 address_bytes = 0;
+			TryGetNetProperty(command == 8 ? 0x101 : 1, 4, &address, &address_bytes);
+			response[1] = PackNetAddress(address);
+		}
+		else if (command == 0x0b)
+			response[1] = ByteSwap32(socket_id < KONAMI_NET_SOCKET_COUNT ? socket_id : 0xffffffff);
 		else if (command == 0x0f)
 			response[1] = stream_connected ? 0 : ByteSwap32(0xffffffff);
 		else if (stream_transfer_done)
@@ -4717,9 +4860,10 @@ namespace
 			response.data(), static_cast<u32>(response.size()));
 
 		const size_t pending_quads = FireWire::GetPendingRemoteWriteQuads();
-		if (pending_quads >= NET_BACKLOG_WARN_QUADS && !s_net_sockets[channel].backlog_reported)
+		if (pending_quads >= NET_BACKLOG_WARN_QUADS && socket_id < KONAMI_NET_SOCKET_COUNT &&
+			!s_net_sockets[socket_id].backlog_reported)
 		{
-			s_net_sockets[channel].backlog_reported = true;
+			s_net_sockets[socket_id].backlog_reported = true;
 			Console.Warning("FW NET: channel=%u command=0x%x response is queued behind %zu pending quads",
 				channel, command, pending_quads);
 		}
@@ -5015,8 +5159,13 @@ namespace
 		s_popn_repeated_frame_count = 0;
 		for (auto& packets : s_net_rx_packets)
 			packets.clear();
-		for (u32 channel = 0; channel < KONAMI_NET_CHANNEL_COUNT; channel++)
-			CloseNetChannelSocket(channel);
+		for (Python1NetPendingOperation& operation : s_net_pending_operations)
+			operation = {};
+		for (u32 socket_id = 0; socket_id < KONAMI_NET_SOCKET_COUNT; socket_id++)
+		{
+			CloseNetSocket(socket_id);
+			s_net_sockets[socket_id].is_open = false;
+		}
 		s_popn_pcb_id_prefix_patched = false;
 		s_net_property_response = {};
 		ResetFsciStream();
@@ -5275,7 +5424,7 @@ namespace
 
 			const bool timed_out = GetCurrentCycle() >= operation.timeout_cycle;
 			const bool socket_lost = operation.kind != Python1NetPendingKind::Connect &&
-									 s_net_sockets[channel].handle == NET_INVALID_SOCKET;
+									 s_net_sockets[operation.socket_id].handle == NET_INVALID_SOCKET;
 
 			if (socket_lost || timed_out)
 			{
@@ -5285,7 +5434,7 @@ namespace
 				const bool is_connect = operation.kind == Python1NetPendingKind::Connect;
 				const u32 byte_count = operation.byte_count;
 				const bool is_send = operation.kind == Python1NetPendingKind::Send;
-				CloseNetChannelSocket(channel);
+				CloseNetSocket(operation.socket_id);
 				CompletePendingNetOperation(channel,
 					is_connect ? ByteSwap32(0xffffffff) : (is_send ? ByteSwap32(byte_count) : 0));
 				continue;
@@ -5295,9 +5444,9 @@ namespace
 			{
 				case Python1NetPendingKind::Connect:
 				{
-					if (s_net_sockets[channel].handle == NET_INVALID_SOCKET)
+					if (s_net_sockets[operation.socket_id].handle == NET_INVALID_SOCKET)
 					{
-						const Python1NetConnectResult result = BeginConnectNetChannelToServer(channel);
+						const Python1NetConnectResult result = BeginConnectNetSocketToServer(operation.socket_id);
 						if (result == Python1NetConnectResult::InProgress)
 							continue;
 
@@ -5306,20 +5455,20 @@ namespace
 						break;
 					}
 
-					if (!IsNetChannelWritable(channel))
+					if (!IsNetSocketWritable(operation.socket_id))
 						continue;
 
-					const bool connected = FinishConnectNetChannel(channel);
+					const bool connected = FinishConnectNetSocket(operation.socket_id);
 					CompletePendingNetOperation(channel, connected ? 0 : ByteSwap32(0xffffffff));
 					break;
 				}
 
 				case Python1NetPendingKind::Send:
 				{
-					if (!IsNetChannelWritable(channel))
+					if (!IsNetSocketWritable(operation.socket_id))
 						continue;
 
-					const Python1NetTransferResult result = SendNetChannelBuffer(channel, operation);
+					const Python1NetTransferResult result = SendNetSocketBuffer(operation.socket_id, operation);
 					if (result == Python1NetTransferResult::InProgress)
 						continue;
 
@@ -5329,11 +5478,11 @@ namespace
 
 				case Python1NetPendingKind::Receive:
 				{
-					if (!IsNetChannelReadable(channel))
+					if (!IsNetSocketReadable(operation.socket_id))
 						continue;
 
 					u32 transferred = 0;
-					const Python1NetTransferResult result = ReceiveNetChannelStream(channel, operation.address,
+					const Python1NetTransferResult result = ReceiveNetSocketStream(operation.socket_id, operation.address,
 						operation.byte_count, &transferred);
 					if (result == Python1NetTransferResult::InProgress)
 						continue;
