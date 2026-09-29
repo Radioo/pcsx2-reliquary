@@ -120,6 +120,7 @@
     <ClCompile Include="Themes.cpp" />
     <ClCompile Include="Tools\InputRecording\InputRecordingViewer.cpp" />
     <ClCompile Include="Tools\InputRecording\NewInputRecordingDlg.cpp" />
+    <ClCompile Include="Tools\PopnCardManagerDialog.cpp" />
     <ClCompile Include="Debugger\AnalysisOptionsDialog.cpp" />
     <ClCompile Include="Debugger\DebuggerView.cpp" />
     <ClCompile Include="Debugger\DebuggerWindow.cpp" />
@@ -244,6 +245,7 @@
     <QtMoc Include="GameList\GameListWidget.h" />
     <QtMoc Include="GameList\GameListRefreshThread.h" />
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h" />
+    <QtMoc Include="Tools\PopnCardManagerDialog.h" />
     <QtMoc Include="Tools\InputRecording\InputRecordingViewer.h" />
     <ClInclude Include="QtUtils.h" />
     <QtMoc Include="Debugger\AnalysisOptionsDialog.h" />

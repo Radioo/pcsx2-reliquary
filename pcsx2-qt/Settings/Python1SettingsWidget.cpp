@@ -3,12 +3,19 @@
 
 #include "PrecompiledHeader.h"
 
+#include <QtCore/QSignalBlocker>
+
+#include <algorithm>
+
 #include "pcsx2/GameList.h"
 
 #include "Python1SettingsWidget.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
 #include "SettingsWindow.h"
+#include "Tools/PopnCardManagerDialog.h"
+
+#include "pcsx2/INISettingsInterface.h"
 
 Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, SettingsWindow* window, QWidget* parent)
 	: QWidget(parent)
@@ -61,8 +68,11 @@ Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, Setti
 	m_ui.memoryCardIdPath->setEnabled(true);
 	connect(m_ui.memoryCardIdBrowse, &QPushButton::clicked, this, &Python1SettingsWidget::onMemoryCardIdBrowseClicked);
 
-	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cardNumber, "Python1/Game", "CardNumber", "");
-	m_ui.cardNumber->setEnabled(true);
+	populateCards();
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cardFile, PopnCard::SETTINGS_SECTION, PopnCard::CARD_FILE_KEY, "");
+	connect(m_ui.cardFile, &QComboBox::currentIndexChanged, this, &Python1SettingsWidget::updateCardSummary);
+	connect(m_ui.manageCards, &QPushButton::clicked, this, &Python1SettingsWidget::onManageCardsClicked);
+	updateCardSummary();
 
 	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.serverUrl, "Python1/Game", "ServerUrl", "");
 	m_ui.serverUrl->setEnabled(true);
@@ -78,29 +88,6 @@ Python1SettingsWidget::Python1SettingsWidget(const GameList::Entry* entry, Setti
 	m_ui.cabinetPhase->addItem(QStringLiteral("PHASE:MAX. HITASURA MODE RELEASE"), QStringLiteral("4"));
 	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.cabinetPhase, "Python1/Game", "CabinetPhase", "");
 
-	m_ui.popnCardDesign->addItem(tr("Blank card (no bonus)"), QString());
-	m_ui.popnCardDesign->addItem(QStringLiteral("1 - song: LOVE FIRE"), QStringLiteral("1"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("2 - song: TOON MANIAC"), QStringLiteral("2"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("3 - song: Cry Out"), QStringLiteral("3"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("4 - song: HONEまで トゥナイト"), QStringLiteral("4"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("5 - song: Tap'n! Slap'n! Pop'n Music!"), QStringLiteral("5"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("6 - song: WITHOUT YOU AROUND"), QStringLiteral("6"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("7 - song: 映画「SICILLIANA」のテーマ"), QStringLiteral("7"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("8 - song: 宇宙船Q-Mex"), QStringLiteral("8"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("9 - song: ostin-art"), QStringLiteral("9"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("10 - song: クチビル"), QStringLiteral("10"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("11 - song: power plant"), QStringLiteral("11"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("12 - song: In a Grow"), QStringLiteral("12"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("13 - character: cats"), QStringLiteral("13"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("14 - character: yoshimoto"), QStringLiteral("14"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("15 - character: honerock"), QStringLiteral("15"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("16 - character: red"), QStringLiteral("16"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("17 - character: comoba"), QStringLiteral("17"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("18 - option: Hi-SPEED x6 / x8"), QStringLiteral("18"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("19 - option: CHARA-POP / STAGE-POP"), QStringLiteral("19"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("20 - option: SUPER RANDOM"), QStringLiteral("20"));
-	m_ui.popnCardDesign->addItem(QStringLiteral("21 - unlocks everything"), QStringLiteral("21"));
-	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.popnCardDesign, "Python1/Game", "CardDesign", "");
 }
 
 void Python1SettingsWidget::onHddImageBrowseClicked()
@@ -230,5 +217,34 @@ void Python1SettingsWidget::onMemoryCardIdBrowseClicked()
 }
 
 Python1SettingsWidget::~Python1SettingsWidget() = default;
+
+void Python1SettingsWidget::populateCards()
+{
+	QSignalBlocker blocker(m_ui.cardFile);
+	m_ui.cardFile->clear();
+	m_ui.cardFile->addItem(tr("None"), QString());
+	for (const std::string& name : PopnCard::ListCards())
+		m_ui.cardFile->addItem(QString::fromStdString(name), QString::fromStdString(name));
+
+	const QString current = QString::fromStdString(m_window->getStringValue(PopnCard::SETTINGS_SECTION, PopnCard::CARD_FILE_KEY, "").value_or(std::string()));
+	m_ui.cardFile->setCurrentIndex(std::max(0, m_ui.cardFile->findData(current)));
+}
+
+void Python1SettingsWidget::updateCardSummary()
+{
+	const QString name = m_ui.cardFile->currentData().toString();
+	m_ui.cardSummary->setText(name.isEmpty() ? QString() : PopnCardManagerDialog::describeCard(name.toStdString()));
+}
+
+void Python1SettingsWidget::onManageCardsClicked()
+{
+	PopnCardManagerDialog dialog(this);
+	dialog.exec();
+
+	if (INISettingsInterface* ini = dynamic_cast<INISettingsInterface*>(m_window->getSettingsInterface()))
+		ini->Load();
+	populateCards();
+	updateCardSummary();
+}
 
 #include "moc_Python1SettingsWidget.cpp"

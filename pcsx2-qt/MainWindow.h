@@ -188,6 +188,7 @@ private Q_SLOTS:
 	void onAboutActionTriggered();
 	void onToolsOpenDataDirectoryTriggered();
 	void onToolsCoverDownloaderTriggered();
+	void onToolsPopnCardManagerTriggered();
 #if !defined(__APPLE__)
 	void onCreateGameShortcutTriggered();
 #endif
@@ -338,6 +339,7 @@ private:
 	QLabel* m_status_resolution_widget = nullptr;
 
 	QMenu* m_settings_toolbar_menu = nullptr;
+	QMenu* m_card_reader_menu = nullptr;
 
 	bool m_display_created = false;
 	bool m_status_volume_muted = false;

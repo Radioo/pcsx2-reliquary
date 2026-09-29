@@ -5,11 +5,15 @@
 
 #include "FireWire/deviceproxy.h"
 
+#include <string>
+
 namespace FireWire::Devices
 {
 	u32 GetKonamiPython1P1IOLatchByte();
 	u32 GetKonamiPython1P1IOMemcardSlot();
 	bool IsKonamiPython1P1IOSerialMode();
+	void InsertKonamiPython1GamePopnCard();
+	void InsertKonamiPython1PopnCard(const std::string& card_name);
 
 	class KonamiPython1DeviceProxy final : public FireWireDeviceProxy
 	{

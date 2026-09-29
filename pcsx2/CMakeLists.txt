@@ -70,6 +70,7 @@ set(pcsx2Sources
 	FireWire/FireWire.cpp
 	FireWire/deviceproxy.cpp
 	FireWire/Devices/KonamiPython1.cpp
+	FireWire/Devices/PopnCard.cpp
 	FiFo.cpp
 	FPU.cpp
 	GameList.cpp
@@ -161,6 +162,7 @@ set(pcsx2Headers
 	FireWire/FireWireDevice.h
 	FireWire/deviceproxy.h
 	FireWire/Devices/KonamiPython1.h
+	FireWire/Devices/PopnCard.h
 	GameDatabase.h
 	Elfheader.h
 	GameList.h

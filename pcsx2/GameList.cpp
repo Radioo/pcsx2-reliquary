@@ -3,6 +3,7 @@
 
 #include "CDVD/CDVD.h"
 #include "Elfheader.h"
+#include "FireWire/Devices/PopnCard.h"
 #include "GameList.h"
 #include "Host.h"
 #include "INISettingsInterface.h"
@@ -659,7 +660,8 @@ bool GameList::GetPython1ListEntry(const std::string& path, GameList::Entry* ent
 
 	std::string filename(VMManager::GetGameSettingsPath(entry->serial, entry->crc));
 	std::unique_ptr<INISettingsInterface> sif = std::make_unique<INISettingsInterface>(std::move(filename));
-	if (FileSystem::FileExists(sif->GetFileName().c_str()))
+	const bool settings_existed = FileSystem::FileExists(sif->GetFileName().c_str());
+	if (settings_existed)
 		sif->Load();
 
 	sif->SetStringValue("Python1/Game", "HddImageFile", hdd_image_path.c_str());
@@ -671,7 +673,9 @@ bool GameList::GetPython1ListEntry(const std::string& path, GameList::Entry* ent
 	sif->SetStringValue("Python1/Game", "ExternalDongleFile", external_dongle_path.c_str());
 	sif->SetStringValue("Python1/Game", "MemoryCardDongleFile", memory_card_dongle_path.c_str());
 	sif->SetStringValue("Python1/Game", "MemoryCardIdFile", memory_card_id_path.c_str());
-	sif->SetStringValue("Python1/Game", "CardNumber", card_number.c_str());
+	if (!settings_existed && !card_number.empty())
+		sif->SetStringValue("Python1/Game", "CardNumber", card_number.c_str());
+	PopnCard::AdoptLegacySettings(*sif, game_id);
 	sif->SetStringValue("Python1/Game", "ServerUrl", server_url.c_str());
 	sif->SetStringValue("Python1/Game", "PcbId", pcb_id.c_str());
 	sif->SetStringValue("Python1/Game", "IoMode", io_mode.c_str());

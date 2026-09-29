@@ -196,18 +196,39 @@
        <widget class="QComboBox" name="ioMode"/>
       </item>
         <item row="11" column="0">
-       <widget class="QLabel" name="cardNumberLabel">
+       <widget class="QLabel" name="cardFileLabel">
         <property name="text">
-         <string>Card Number:</string>
+         <string>Card:</string>
         </property>
        </widget>
       </item>
         <item row="11" column="1">
-       <widget class="QLineEdit" name="cardNumber">
-        <property name="placeholderText">
-         <string>16 hex digits, blank = new card</string>
-        </property>
-       </widget>
+       <layout class="QVBoxLayout" name="cardFileLayout">
+        <item>
+         <layout class="QHBoxLayout" name="cardFileRowLayout">
+          <item>
+           <widget class="QComboBox" name="cardFile">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="manageCards">
+            <property name="text">
+             <string>Manage...</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QLabel" name="cardSummary"/>
+        </item>
+       </layout>
       </item>
         <item row="12" column="0">
        <widget class="QLabel" name="serverUrlLabel">
@@ -248,20 +269,6 @@
        <widget class="QComboBox" name="cabinetPhase">
         <property name="toolTip">
          <string>Overrides the pop'n music 9 event phase held in BBSRAM, the value TEST MODE shows under EVENT OPTIONS. The cabinet's own value is restored before the game writes its settings back, so switching phases here never changes what is stored.</string>
-        </property>
-       </widget>
-      </item>
-        <item row="15" column="0">
-       <widget class="QLabel" name="popnCardDesignLabel">
-        <property name="text">
-         <string>Pop'n 9 Card Data:</string>
-        </property>
-       </widget>
-      </item>
-        <item row="15" column="1">
-       <widget class="QComboBox" name="popnCardDesign">
-        <property name="toolTip">
-         <string>Twenty pop'n music 9 e-amusement card designs were sold and each one carried a different hidden value, which decides the extra bonus a visiting P-FRIEND brings. This overrides that value in the emulated card. Which printed design carried which value is not known, so the entries are named after what they unlock. The card file on disk is not modified.</string>
         </property>
        </widget>
       </item>

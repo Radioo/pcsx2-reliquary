@@ -824,6 +824,9 @@
     <ClCompile Include="FireWire\Devices\KonamiPython1.cpp">
       <Filter>System\Ps2\Iop\FW</Filter>
     </ClCompile>
+    <ClCompile Include="FireWire\Devices\PopnCard.cpp">
+      <Filter>System\Ps2\Iop\FW</Filter>
+    </ClCompile>
     <ClCompile Include="SPU2\spu2.cpp">
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>
@@ -1797,6 +1800,9 @@
       <Filter>System\Ps2\Iop\FW</Filter>
     </ClInclude>
     <ClInclude Include="FireWire\Devices\KonamiPython1.h">
+      <Filter>System\Ps2\Iop\FW</Filter>
+    </ClInclude>
+    <ClInclude Include="FireWire\Devices\PopnCard.h">
       <Filter>System\Ps2\Iop\FW</Filter>
     </ClInclude>
     <ClInclude Include="SPU2\spu2.h">

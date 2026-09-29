@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "FireWire/Devices/KonamiPython1.h"
+#include "FireWire/Devices/PopnCard.h"
 #include "FireWire/FireWire.h"
 
 #include "Common.h"
@@ -1072,22 +1073,18 @@ namespace
 		return 0;
 	}
 
-	constexpr u32 POPN_CARD_RECORD_SIZE = 65;
-	constexpr u32 POPN_CARD_FILE_SIZE = 128;
 	constexpr u32 POPN_CARD_READ_REPLY_DATA_SIZE = 130;
 	constexpr u32 POPN_CARD_READ_REPLY_RECORD_OFFSET = 2;
 	constexpr u32 POPN_KEYPAD_MAX_EVENTS_PER_POLL = 8;
-	constexpr u8 POPN_CARD_NEW_HEADER[] = {0x28, 0x23, 0x41, 0x01};
-	constexpr u8 POPN_CARD_USED_HEADER[] = {0x68, 0x23, 0x41, 0x01};
-	constexpr u32 POPN_CARD_ID_OFFSET = 6;
-	constexpr u32 POPN_CARD_DESIGN_OFFSET = 5;
 	constexpr u8 POPN_READER_PRODUCT_REPLY_TAIL[] = {
 		0x01, 0x00, 0x00, 0x00,
 		0x00,
 		0x01, 0x00, 0x00,
 		'C', 'A', 'R', 'D', ' ', 'R', '/', 'W',
 	};
-	constexpr const char* POPN_CARD_DEFAULT_FILENAME = "python1_popn_card.bin";
+	constexpr const char* POPN_CARD_FILE_ENV = "PCSX2_FW_POPN_CARD_FILE";
+	constexpr const char* POPN_CARD_OSD_KEY = "Python1PopnCard";
+	constexpr float POPN_CARD_OSD_SECONDS = 3.0f;
 
 	enum PopnReaderControlOp : u8
 	{
@@ -1120,142 +1117,14 @@ namespace
 		bool insert_pending = false;
 		bool read_ready = false;
 		bool write_buffer_loaded = false;
-		bool card_loaded = false;
-		std::array<u8, POPN_CARD_FILE_SIZE> card = {};
-		std::array<u8, POPN_CARD_FILE_SIZE> write_buffer = {};
+		std::array<u8, PopnCard::FILE_SIZE> card = {};
+		std::array<u8, PopnCard::FILE_SIZE> write_buffer = {};
 		std::string card_path;
 	};
 
 	PopnCardReaderState s_popn_reader;
 	u8 s_popn_reader_logged_status = 0;
 	bool s_popn_reader_status_logged = false;
-
-	u8 PopnCardCrc8(const u8* data, u32 size)
-	{
-		u8 crc = 0xff;
-		for (u32 i = 0; i < size; i++)
-		{
-			crc ^= data[i];
-			for (u32 bit = 0; bit < 8; bit++)
-				crc = (crc & 1) ? static_cast<u8>((crc >> 1) ^ 0x8c) : static_cast<u8>(crc >> 1);
-		}
-		return static_cast<u8>(~crc);
-	}
-
-	u16 PopnCardCrc16(const u8* data, u32 size)
-	{
-		u16 crc = 0xffff;
-		for (u32 i = 0; i < size; i++)
-		{
-			crc ^= data[i];
-			for (u32 bit = 0; bit < 8; bit++)
-				crc = (crc & 1) ? static_cast<u16>((crc >> 1) ^ 0x8408) : static_cast<u16>(crc >> 1);
-		}
-		return static_cast<u16>(~crc);
-	}
-
-	void FinalizePopnCardCrcs(std::array<u8, POPN_CARD_FILE_SIZE>& card)
-	{
-		card[4] = PopnCardCrc8(card.data(), 4);
-		const u16 data_crc = PopnCardCrc16(card.data() + 5, 58);
-		card[63] = static_cast<u8>(data_crc);
-		card[64] = static_cast<u8>(data_crc >> 8);
-	}
-
-	void BuildNewPopnCard(std::array<u8, POPN_CARD_FILE_SIZE>& card)
-	{
-		card.fill(0);
-		std::copy_n(POPN_CARD_NEW_HEADER, sizeof(POPN_CARD_NEW_HEADER), card.begin());
-		FinalizePopnCardCrcs(card);
-	}
-
-	std::optional<std::array<u8, 8>> GetPopnCardNumber()
-	{
-		std::string text = GetPython1GamePath("CardNumber", "PCSX2_FW_POPN_CARD_NUMBER");
-		std::string hex;
-		for (const char c : text)
-		{
-			if (std::isxdigit(static_cast<unsigned char>(c)))
-				hex.push_back(c);
-		}
-		if (hex.size() != 16)
-			return std::nullopt;
-
-		std::array<u8, 8> id = {};
-		for (u32 i = 0; i < 8; i++)
-			id[i] = static_cast<u8>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
-		return id;
-	}
-
-	void ApplyPopnCardNumber(std::array<u8, POPN_CARD_FILE_SIZE>& card, const std::array<u8, 8>& id)
-	{
-		std::copy_n(POPN_CARD_USED_HEADER, sizeof(POPN_CARD_USED_HEADER), card.begin());
-		for (u32 i = 0; i < 8; i++)
-			card[POPN_CARD_ID_OFFSET + i] = id[7 - i];
-		FinalizePopnCardCrcs(card);
-	}
-
-	void ApplyPopnCardDesign(std::array<u8, POPN_CARD_FILE_SIZE>& card)
-	{
-		const std::string text = GetPython1GamePath("CardDesign", "PCSX2_FW_POPN_CARD_DESIGN");
-		if (text.empty())
-			return;
-
-		const u32 design = static_cast<u32>(std::strtoul(text.c_str(), nullptr, 10));
-		if (design > 0xFF)
-			return;
-
-		card[POPN_CARD_DESIGN_OFFSET] = static_cast<u8>(design);
-		FinalizePopnCardCrcs(card);
-		Console.WriteLn("FW HLE: pop'n card design data set to %u", design);
-	}
-
-	std::string GetPopnCardPath()
-	{
-		return Path::Combine(EmuFolders::MemoryCards, POPN_CARD_DEFAULT_FILENAME);
-	}
-
-	void SavePopnCard()
-	{
-		if (s_popn_reader.card_path.empty())
-			return;
-		if (!WriteBinaryFile(s_popn_reader.card_path, s_popn_reader.card.data(), s_popn_reader.card.size()))
-			Console.Error("FW HLE: failed to save pop'n card file '%s'", s_popn_reader.card_path.c_str());
-	}
-
-	void LoadPopnCard()
-	{
-		s_popn_reader.card_path = GetPopnCardPath();
-		s_popn_reader.card_loaded = true;
-		s_popn_reader.card.fill(0);
-
-		const std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(s_popn_reader.card_path.c_str());
-		const bool have_file = data.has_value() && data->size() >= POPN_CARD_RECORD_SIZE;
-		if (have_file)
-			std::copy_n(data->begin(), std::min<size_t>(data->size(), s_popn_reader.card.size()), s_popn_reader.card.begin());
-
-		const std::optional<std::array<u8, 8>> number = GetPopnCardNumber();
-		if (number.has_value())
-		{
-			ApplyPopnCardNumber(s_popn_reader.card, number.value());
-			SavePopnCard();
-			Console.WriteLn("FW HLE: pop'n card '%s' set to configured number", s_popn_reader.card_path.c_str());
-			ApplyPopnCardDesign(s_popn_reader.card);
-			return;
-		}
-
-		if (have_file)
-		{
-			Console.WriteLn("FW HLE: loaded pop'n card '%s'", s_popn_reader.card_path.c_str());
-			ApplyPopnCardDesign(s_popn_reader.card);
-			return;
-		}
-
-		BuildNewPopnCard(s_popn_reader.card);
-		SavePopnCard();
-		Console.WriteLn("FW HLE: created new pop'n card '%s'", s_popn_reader.card_path.c_str());
-		ApplyPopnCardDesign(s_popn_reader.card);
-	}
 
 	void ResetPopnCardReaderRuntimeState()
 	{
@@ -1304,13 +1173,61 @@ namespace
 		}
 	}
 
+	void SavePopnCard()
+	{
+		if (!s_popn_reader.card_path.empty() && !PopnCard::Save(s_popn_reader.card_path, s_popn_reader.card))
+			Console.Error("FW HLE: failed to save pop'n card file '%s'", s_popn_reader.card_path.c_str());
+	}
+
 	void InsertPopnCard()
 	{
 		s_popn_reader.card_inside = true;
 		s_popn_reader.insert_pending = false;
 		s_popn_reader.read_ready = false;
 		Console.WriteLn("POPN READER: card drawn in, %s", DescribePopnReaderState().c_str());
-		Host::AddKeyedOSDMessage("Python1PopnCard", "Card inserted into the reader.", 3.0f);
+		Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "Card inserted.", POPN_CARD_OSD_SECONDS);
+	}
+
+	void RequestPopnCardInsert(const std::string& name)
+	{
+		if (s_popn_reader.card_inside)
+		{
+			Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "A card is already in the reader.", POPN_CARD_OSD_SECONDS);
+			return;
+		}
+
+		if (name.empty())
+		{
+			Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "No card set for this game.", POPN_CARD_OSD_SECONDS);
+			return;
+		}
+
+		const std::string path = PopnCard::GetCardPath(name);
+		const std::optional<PopnCard::Bytes> card = PopnCard::Load(path);
+		if (!card.has_value())
+		{
+			Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, StringUtil::StdStringFromFormat("Card \"%s\" not found.", name.c_str()),
+				POPN_CARD_OSD_SECONDS);
+			return;
+		}
+
+		s_popn_reader.card = card.value();
+		s_popn_reader.card_path = path;
+		s_popn_reader.insert_pending = true;
+		if (s_popn_reader.shutter_open)
+			InsertPopnCard();
+		else
+			Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "Card ready.", POPN_CARD_OSD_SECONDS);
+	}
+
+	std::string GetPopnGameCardName()
+	{
+		return GetPython1GamePath(PopnCard::CARD_FILE_KEY, POPN_CARD_FILE_ENV);
+	}
+
+	bool HasPopnCardReader()
+	{
+		return s_device && GetPython1IOMode() == Python1IOMode::POPN;
 	}
 
 	void UpdatePopnCardReaderInputs(u32 pressed)
@@ -1318,23 +1235,8 @@ namespace
 		if (GetPython1IOMode() != Python1IOMode::POPN)
 			return;
 
-		if (!(pressed & (1u << P1IO_BIND_CARD_INSERT)))
-			return;
-
-		// One button drives the whole cycle. The player pushes a card in; the reader draws it
-		// as soon as the game opens the slot, then the game itself ejects it (control 2) when
-		// it is done, so no separate eject action is needed.
-		if (s_popn_reader.card_inside)
-		{
-			Host::AddKeyedOSDMessage("Python1PopnCard", "A card is already in the reader.", 3.0f);
-			return;
-		}
-
-		s_popn_reader.insert_pending = true;
-		if (s_popn_reader.shutter_open)
-			InsertPopnCard();
-		else
-			Host::AddKeyedOSDMessage("Python1PopnCard", "Card ready. It will be drawn in when the game asks for one.", 3.0f);
+		if (pressed & (1u << P1IO_BIND_CARD_INSERT))
+			RequestPopnCardInsert(GetPopnGameCardName());
 	}
 
 	void QueuePopnReaderDeviceReply(u8 node, u8 command, u8 field4, const u8* data, u32 data_size)
@@ -1406,7 +1308,7 @@ namespace
 				return 0x00;
 			case POPN_READER_CONTROL_EJECT:
 				if (s_popn_reader.card_inside)
-					Host::AddKeyedOSDMessage("Python1PopnCard", "Card ejected by the game.", 3.0f);
+					Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "Card ejected.", POPN_CARD_OSD_SECONDS);
 				s_popn_reader.shutter_open = false;
 				s_popn_reader.card_inside = false;
 				s_popn_reader.read_ready = false;
@@ -1442,7 +1344,7 @@ namespace
 	void RunPopnReaderCardReset()
 	{
 		if (s_popn_reader.card_inside)
-			Host::AddKeyedOSDMessage("Python1PopnCard", "Card returned by the reader.", 3.0f);
+			Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "Card returned.", POPN_CARD_OSD_SECONDS);
 
 		s_popn_reader.shutter_open = false;
 		s_popn_reader.card_inside = false;
@@ -1490,7 +1392,7 @@ namespace
 				break;
 			case 0x16:
 				s_popn_reader.write_buffer.fill(0);
-				std::copy_n(payload, std::min<u32>(payload_size, POPN_CARD_FILE_SIZE), s_popn_reader.write_buffer.begin());
+				std::copy_n(payload, std::min<u32>(payload_size, PopnCard::FILE_SIZE), s_popn_reader.write_buffer.begin());
 				s_popn_reader.write_buffer_loaded = true;
 				QueuePopnReaderByteReply(node, command, 0x00);
 				break;
@@ -1498,7 +1400,7 @@ namespace
 			{
 				std::array<u8, POPN_CARD_READ_REPLY_DATA_SIZE> data = {};
 				data[0] = 0x18;
-				std::copy_n(s_popn_reader.card.begin(), POPN_CARD_RECORD_SIZE, data.begin() + POPN_CARD_READ_REPLY_RECORD_OFFSET);
+				std::copy_n(s_popn_reader.card.begin(), PopnCard::RECORD_SIZE, data.begin() + POPN_CARD_READ_REPLY_RECORD_OFFSET);
 				QueuePopnReaderDeviceReply(node, command, data[0], data.data() + 1, static_cast<u32>(data.size() - 1));
 				break;
 			}
@@ -5255,7 +5157,7 @@ namespace
 		LoadBbsram();
 		LoadDallasDongles();
 		LoadConfigRom();
-		LoadPopnCard();
+		s_popn_reader.card_path.clear();
 		RegisterPython1EeStdoutHook();
 		RegisterPopnCabinetPhaseHooks();
 		StartPython1ServerResolve();
@@ -5743,6 +5645,22 @@ u32 FireWire::Devices::GetKonamiPython1P1IOMemcardSlot()
 bool FireWire::Devices::IsKonamiPython1P1IOSerialMode()
 {
 	return IsPython1P1IOSerialMode();
+}
+
+void FireWire::Devices::InsertKonamiPython1GamePopnCard()
+{
+	if (HasPopnCardReader())
+		RequestPopnCardInsert(GetPopnGameCardName());
+	else
+		Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "This game has no card reader.", POPN_CARD_OSD_SECONDS);
+}
+
+void FireWire::Devices::InsertKonamiPython1PopnCard(const std::string& card_name)
+{
+	if (HasPopnCardReader())
+		RequestPopnCardInsert(card_name);
+	else
+		Host::AddKeyedOSDMessage(POPN_CARD_OSD_KEY, "This game has no card reader.", POPN_CARD_OSD_SECONDS);
 }
 
 namespace FireWire::Devices

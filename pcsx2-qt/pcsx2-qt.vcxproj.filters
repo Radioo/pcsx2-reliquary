@@ -147,6 +147,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="AutoUpdaterDialog.cpp" />
+    <ClCompile Include="Tools\PopnCardManagerDialog.cpp">
+      <Filter>Tools</Filter>
+    </ClCompile>
     <ClCompile Include="Tools\InputRecording\NewInputRecordingDlg.cpp">
       <Filter>Tools\Input Recording</Filter>
     </ClCompile>
@@ -416,6 +419,9 @@
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="AutoUpdaterDialog.h" />
+    <QtMoc Include="Tools\PopnCardManagerDialog.h">
+      <Filter>Tools</Filter>
+    </QtMoc>
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h">
       <Filter>Tools\Input Recording</Filter>
     </QtMoc>

@@ -18,7 +18,6 @@ InternalDonglePath=popn14/ds2430.u3
 ExternalDonglePath=popn14/ds2430_black_gnf14jab.u3
 MemoryCardDonglePath=popn14/kn00002.ps2
 MemoryCardIdPath=popn14/kn00002.id
-CardFilePath=popn14/card.bin
 CardNumber=0000000000000001
 IoMode=POPN
 ```
@@ -43,8 +42,7 @@ Use either `HddImagePath` or `CfImagePath` for normal game media. A descriptor m
 | `MemoryCardDonglePath` | Yes      | Raw PS2 memory-card dongle image including ECC/spare data. It is assigned to memory-card slot 1.                                                                                                   |
 | `MemoryCardIdPath`     | Yes      | Card ID/key data used for card-bound KELF auth.                                                                                                                                                    |
 | `IoMode`               | No       | P1IO protocol/input profile. Defaults to `JVS`.                                                                                                                                                    |
-| `CardFilePath`         | No       | Magnetic card image for the pop'n card reader (128 bytes, created as a fresh card if missing). Defaults to `python1_popn_card.bin` in the memory card folder. Only used with `IoMode=POPN`.                           |
-| `CardNumber`           | No       | 16 hex digits for the pop'n card reader. When set, the emulated card is a used card carrying this id; blank generates a fresh new card. Only used with `IoMode=POPN`.                                          |
+| `CardNumber`           | No       | 16 hex digits for the pop'n card reader. When the game is first added to the game list, a registered pop'n 9 card with this number is created in the card manager (Tools > Pop'n Card Manager) and put in the game's reader. After that, cards are managed only in the card manager. Only used with `IoMode=POPN`. |
 
 ## I/O modes
 
@@ -66,3 +64,15 @@ Select the mode matching the board firmware and game. The setting affects P1IO p
 Configure Python 1 inputs under the FireWire section of the controller settings.
 
 ![Python 1 I/O configuration](p1io-config.png)
+
+## Pop'n cards
+
+Cards live in `memcards/popn_cards/`, one 128-byte `.bin` file per card, named after the card. Each game's settings pick one card for its reader (`Python1/Game/CardFile`). The game reads the card from that file when it is inserted and writes its changes back to the same file.
+
+- **Tools > Pop'n Card Manager** lists every card with the game it belongs to, its state, number, card data, checksums, the games that use it and its raw bytes. It creates, copies, renames, imports, exports, repairs and deletes cards.
+- **Game Properties > Python 1 > Card** picks the card in that game's reader.
+- **System > Card Reader** inserts the game's card, or any other card for this session.
+
+`PCSX2_FW_POPN_CARD_FILE` overrides `CardFile` with a card name.
+
+The old `CardNumber` and `CardDesign` game settings, and the old `python1_popn_card_<serial>.bin` files, are turned into cards the first time the app starts.

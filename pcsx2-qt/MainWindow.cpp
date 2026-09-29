@@ -20,6 +20,7 @@
 #include "Settings/MemoryCardCreateDialog.h"
 #include "Tools/InputRecording/InputRecordingViewer.h"
 #include "Tools/InputRecording/NewInputRecordingDlg.h"
+#include "Tools/PopnCardManagerDialog.h"
 
 #if !defined(__APPLE__)
 #include "ShortcutCreationDialog.h"
@@ -28,6 +29,8 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/CDVDdiscReader.h"
+#include "pcsx2/FireWire/Devices/KonamiPython1.h"
+#include "pcsx2/FireWire/Devices/PopnCard.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/GS.h"
 #include "pcsx2/GSDumpReplayer.h"
@@ -149,6 +152,7 @@ void MainWindow::initialize()
 	m_ui.setupUi(this);
 	setupAdditionalUi();
 	connectSignals();
+	PopnCardManagerDialog::migrateLegacySettings();
 	connectVMThreadSignals(g_emu_thread);
 
 	restoreStateFromConfig();
@@ -215,6 +219,29 @@ void MainWindow::setupAdditionalUi()
 	m_settings_toolbar_menu = new QMenu(m_ui.toolBar);
 	m_settings_toolbar_menu->addAction(m_ui.actionSettings);
 	m_settings_toolbar_menu->addAction(m_ui.actionViewGameProperties);
+
+	QAction* card_manager_action = new QAction(tr("Pop'n Card Manager..."), m_ui.menuTools);
+	m_ui.menuTools->insertAction(m_ui.actionToggleSoftwareRendering, card_manager_action);
+	connect(card_manager_action, &QAction::triggered, this, &MainWindow::onToolsPopnCardManagerTriggered);
+
+	m_card_reader_menu = new QMenu(tr("Card Reader"), m_ui.menuSystem);
+	connect(m_card_reader_menu->addAction(tr("Insert Card")), &QAction::triggered, this,
+		[]() { Host::RunOnCPUThread([]() { FireWire::Devices::InsertKonamiPython1GamePopnCard(); }); });
+	QMenu* other_cards_menu = m_card_reader_menu->addMenu(tr("Insert Another Card"));
+	connect(other_cards_menu, &QMenu::aboutToShow, this, [other_cards_menu]() {
+		other_cards_menu->clear();
+		const std::vector<std::string> names = PopnCard::ListCards();
+		if (names.empty())
+			other_cards_menu->addAction(tr("No cards"))->setEnabled(false);
+		for (const std::string& name : names)
+		{
+			other_cards_menu->addAction(QString::fromStdString(name),
+				[name]() { Host::RunOnCPUThread([name]() { FireWire::Devices::InsertKonamiPython1PopnCard(name); }); });
+		}
+	});
+	m_card_reader_menu->addSeparator();
+	connect(m_card_reader_menu->addAction(tr("Manage Cards...")), &QAction::triggered, this, &MainWindow::onToolsPopnCardManagerTriggered);
+	m_ui.menuSystem->insertMenu(m_ui.menuLoadState->menuAction(), m_card_reader_menu);
 
 	for (u32 scale = 0; scale <= 10; scale++)
 	{
@@ -1104,6 +1131,7 @@ void MainWindow::updateEmulationActions(bool starting, bool running, bool stoppi
 	m_ui.actionPause->setEnabled(running);
 	m_ui.actionScreenshot->setEnabled(running);
 	m_ui.menuChangeDisc->setEnabled(running);
+	m_card_reader_menu->setEnabled(running);
 	m_ui.menuLoadState->setEnabled(running && !Achievements::IsHardcoreModeActive());
 	m_ui.menuSaveState->setEnabled(running);
 	m_ui.actionSaveGSDump->setEnabled(running);
@@ -2096,6 +2124,12 @@ void MainWindow::onToolsOpenDataDirectoryTriggered()
 {
 	const QString path(QString::fromStdString(EmuFolders::DataRoot));
 	QtUtils::OpenURL(this, QUrl::fromLocalFile(path));
+}
+
+void MainWindow::onToolsPopnCardManagerTriggered()
+{
+	PopnCardManagerDialog dialog(this);
+	dialog.exec();
 }
 
 void MainWindow::onToolsCoverDownloaderTriggered()

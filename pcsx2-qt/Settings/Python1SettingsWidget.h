@@ -28,12 +28,16 @@ private Q_SLOTS:
 	void onExternalDongleBrowseClicked();
 	void onMemoryCardDongleBrowseClicked();
 	void onMemoryCardIdBrowseClicked();
+	void onManageCardsClicked();
+	void updateCardSummary();
 
 public:
 	Python1SettingsWidget(const GameList::Entry* entry, SettingsWindow* window, QWidget* parent);
 	~Python1SettingsWidget();
 
 private:
+	void populateCards();
+
 	Ui::Python1SettingsWidget m_ui;
 	SettingsWindow* m_window;
 };
