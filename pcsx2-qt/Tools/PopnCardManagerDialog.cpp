@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 #include <vector>
 
 namespace
@@ -85,6 +86,42 @@ namespace
 		{21, "Unlocks everything"},
 	}};
 
+	constexpr std::array<Bonus, 33> POPN10_CARD_DATA = {{
+		{0, "None, MOON"},
+		{1, "Character: ningen, HI-SPEED x6, SUN"},
+		{2, "Character: radio, SUPER RANDOM, MOON"},
+		{3, "Character: gacha, HI-SPEED x6, SUN"},
+		{4, "Character: shoten, SUPER RANDOM, MOON"},
+		{5, "Character: rider, HI-SPEED x6, SUN"},
+		{6, "Character: curry, SUPER RANDOM, MOON"},
+		{7, "Character: seken, HI-SPEED x6, SUN"},
+		{8, "Character: urusei, SUPER RANDOM, MOON"},
+		{9, "Character: sazae, HI-SPEED x6, SUN"},
+		{10, "Character: haige, SUPER RANDOM, MOON"},
+		{11, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, SUN"},
+		{12, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, MOON"},
+		{13, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, SUN"},
+		{14, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, MOON"},
+		{15, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, SUN"},
+		{16, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, MOON"},
+		{17, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, SUN"},
+		{18, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, MOON"},
+		{19, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, SUN"},
+		{20, "SP: every guest character, HI-SPEED x6 and SUPER RANDOM, MOON"},
+		{21, "HI-SPEED x6, SUN"},
+		{22, "SUPER RANDOM, MOON"},
+		{23, "HI-SPEED x6, SUN"},
+		{24, "SUPER RANDOM, MOON"},
+		{25, "HI-SPEED x6, SUN"},
+		{26, "SUPER RANDOM, MOON"},
+		{27, "HI-SPEED x6, SUN"},
+		{28, "SUPER RANDOM, MOON"},
+		{29, "HI-SPEED x6, SUN"},
+		{30, "SUPER RANDOM, MOON"},
+		{31, "Character: cup_9, SUN"},
+		{32, "Character: cup_9, MOON"},
+	}};
+
 	struct Field
 	{
 		u32 from;
@@ -113,6 +150,14 @@ namespace
 	QString tr(const char* text)
 	{
 		return PopnCardManagerDialog::tr(text);
+	}
+
+	void fillCardDataChoices(QComboBox* combo, PopnCard::Game game)
+	{
+		combo->clear();
+		const std::span<const Bonus> choices = game == PopnCard::Game::Popn10 ? std::span<const Bonus>(POPN10_CARD_DATA) : std::span<const Bonus>(BONUSES);
+		for (const Bonus& bonus : choices)
+			combo->addItem(QStringLiteral("%1 - %2").arg(static_cast<int>(bonus.value)).arg(tr(bonus.label)), static_cast<int>(bonus.value));
 	}
 
 	QString gameName(PopnCard::Game game)
@@ -377,8 +422,6 @@ PopnCardManagerDialog::PopnCardManagerDialog(QWidget* parent)
 	m_number = new QLabel(card_page);
 	m_number->setTextInteractionFlags(Qt::TextSelectableByMouse);
 	m_card_data = new QComboBox(card_page);
-	for (const Bonus& bonus : BONUSES)
-		m_card_data->addItem(QStringLiteral("%1 - %2").arg(static_cast<int>(bonus.value)).arg(tr(bonus.label)), static_cast<int>(bonus.value));
 	m_card_data_value = new QLabel(card_page);
 	QHBoxLayout* data_layout = new QHBoxLayout();
 	data_layout->addWidget(m_card_data);
@@ -584,12 +627,13 @@ void PopnCardManagerDialog::showSelectedCard()
 	m_repair->setVisible(isDamaged(info));
 	m_number->setText(isBlank(info.type) ? tr("None yet") : groupNumber(info.number));
 
-	const bool bonus_card = info.game == PopnCard::Game::Popn9;
+	const bool bonus_card = info.game == PopnCard::Game::Popn9 || info.game == PopnCard::Game::Popn10;
 	m_card_data->setVisible(bonus_card);
 	m_card_data_value->setVisible(!bonus_card);
 	m_card_data_value->setText(QString::number(info.card_data));
 	{
 		QSignalBlocker blocker(m_card_data);
+		fillCardDataChoices(m_card_data, info.game);
 		const int index = m_card_data->findData(static_cast<int>(info.card_data));
 		m_card_data->setCurrentIndex(index);
 		m_card_data_value->setVisible(!bonus_card || index < 0);
