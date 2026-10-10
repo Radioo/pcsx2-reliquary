@@ -195,6 +195,7 @@
     </ClCompile>
     <ClCompile Include="ColorPickerButton.cpp" />
     <ClCompile Include="Themes.cpp" />
+    <ClCompile Include="ToolbarCustomizationDialog.cpp" />
     <ClCompile Include="Settings\GamePatchSettingsWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
@@ -465,6 +466,7 @@
     </QtMoc>
     <QtMoc Include="ColorPickerButton.h" />
     <QtMoc Include="SetupWizardDialog.h" />
+    <QtMoc Include="ToolbarCustomizationDialog.h" />
     <QtMoc Include="Settings\GameCheatSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -830,6 +832,7 @@
     <QtUi Include="MainWindow.ui" />
     <QtUi Include="SetupWizardDialog.ui" />
     <QtUi Include="ShortcutCreationDialog.ui" />
+    <QtUi Include="ToolbarCustomizationDialog.ui" />
     <QtUi Include="Debugger\StackView.ui">
       <Filter>Debugger</Filter>
     </QtUi>

@@ -149,6 +149,7 @@ if(WIN32)
         $<$<C_COMPILER_ID:MSVC>:${LIBUSB_ROOT}/libusb-1.0.rc>
     )
     target_compile_definitions(usb-1.0 PRIVATE $<$<C_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS=1>)
+    target_compile_options(usb-1.0 PRIVATE $<$<C_COMPILER_ID:MSVC>:/utf-8>)
     target_link_libraries(usb-1.0 PRIVATE windowsapp)
 else()
     # common POSIX/non-Windows sources
