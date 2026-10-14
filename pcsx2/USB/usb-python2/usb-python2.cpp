@@ -3,6 +3,8 @@
 #include "Host.h"
 #include "IconsPromptFont.h"
 #include "StateWrapper.h"
+#include "USB/usb-python2/Python2BootPatch.h"
+#include "USB/usb-python2/Python2Dongle.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/SettingsInterface.h"
@@ -272,6 +274,9 @@ namespace usb_python2
 		bool isMinimaidConnected = false;
 		bool isUsingBtoolLights = false;
 
+		u8 bootloaderPcbIdPrefix = Python2Dongle::BOOTLOADER_PCB_ID_PREFIX;
+		bool isBootloaderPcbIdPrefixPatched = false;
+
 		std::bitset<128> buttonState;
 		
 		struct freeze
@@ -451,6 +456,24 @@ namespace usb_python2
 		}
 	}
 
+	static void apply_pcb_id(Python2State* s, const std::string& setting)
+	{
+		const std::optional<Python2Dongle::PcbId> pcb_id = Python2Dongle::ParsePcbId(setting);
+		if (!pcb_id.has_value())
+		{
+			Console.Error("P2IO: PcbId '%s' is not 20 hex digits starting with %02X, ignoring", setting.c_str(),
+				Python2Dongle::PCB_ID_HEADER);
+			return;
+		}
+
+		const Python2Dongle::Bytes white = Python2Dongle::BuildWhite(pcb_id->serial);
+		std::copy(white.begin(), white.end(), std::begin(s->f.dongleSlotPayload[1]));
+		s->f.isDongleSlotLoaded[1] = true;
+		s->bootloaderPcbIdPrefix = pcb_id->prefix;
+		Console.WriteLn("P2IO: white dongle signed for e-amusement PCB ID %s",
+			Python2Dongle::FormatPcbId(pcb_id->prefix, white).c_str());
+	}
+
 	static void load_configuration(USBDevice* dev)
 	{
 		Python2State* s = USB_CONTAINER_OF(dev, Python2State, dev);
@@ -518,6 +541,11 @@ namespace usb_python2
 				s->f.isDongleSlotLoaded[1] = false;
 			}
 		}
+
+		s->bootloaderPcbIdPrefix = Python2Dongle::BOOTLOADER_PCB_ID_PREFIX;
+		const std::string pcb_id = si->GetStringValue("Python2/Game", "PcbId", "");
+		if (!pcb_id.empty())
+			apply_pcb_id(s, pcb_id);
 	}
 
 	static void usb_python2_handle_reset(USBDevice* dev)
@@ -528,6 +556,7 @@ namespace usb_python2
 		s->buf.clear();
 		s->isMinimaidConnected = false;
 		s->isUsingBtoolLights = false;
+		s->isBootloaderPcbIdPrefixPatched = false;
 
 		s->f.gameType = s->f.prevGameType = -1;
 		s->f.jammaIoStatus = 0xf0ffff80;
@@ -694,6 +723,9 @@ namespace usb_python2
 					// Dallas Read SID/Mem
 					if (subCmd != 2)
 						s->f.requestedDongle = subCmd;
+
+					if (s->bootloaderPcbIdPrefix != Python2Dongle::BOOTLOADER_PCB_ID_PREFIX && !s->isBootloaderPcbIdPrefixPatched)
+						s->isBootloaderPcbIdPrefixPatched = Python2BootPatch::ApplyPcbIdPrefix(s->bootloaderPcbIdPrefix);
 
 					if (s->f.requestedDongle >= 0)
 					{

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <functional>
+#include <optional>
 
 #ifdef _WIN32
 #include <minwinbase.h>
@@ -59,6 +60,7 @@ namespace InternalServers
 
 		PacketReader::IP::IP_Address localhostIP{{{127, 0, 0, 1}}};
 		std::unordered_map<std::string, PacketReader::IP::IP_Address> hosts;
+		std::optional<PacketReader::IP::IP_Address> redirectAddress;
 		std::atomic<int> outstandingQueries{0};
 		SimpleQueue<PacketReader::IP::UDP::UDP_Packet*> dnsQueue;
 
@@ -75,6 +77,8 @@ namespace InternalServers
 		PacketReader::IP::UDP::UDP_Packet* Recv();
 		//Expects a UDP_payload
 		bool Send(PacketReader::IP::UDP::UDP_Packet* payload);
+
+		void SetRedirectAddress(PacketReader::IP::IP_Address address);
 
 		//This might block for a large amount of time
 		//if destruction takes place during DNS request

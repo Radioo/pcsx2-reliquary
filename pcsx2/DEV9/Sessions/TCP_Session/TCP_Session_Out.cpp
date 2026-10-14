@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstring>
 #include <thread>
 
 #ifdef __POSIX__
@@ -208,6 +209,14 @@ namespace Sessions
 		endpoint.sin_family = AF_INET;
 		endpoint.sin_addr = std::bit_cast<in_addr>(destIP);
 		endpoint.sin_port = htons(destPort);
+		if (serverRedirect.has_value())
+		{
+			std::memcpy(&endpoint.sin_addr, serverRedirect->address.data(), serverRedirect->address.size());
+			endpoint.sin_port = htons(serverRedirect->port);
+			Console.WriteLn("DEV9: TCP: %u.%u.%u.%u:%u redirected to %u.%u.%u.%u:%u", destIP.bytes[0], destIP.bytes[1], destIP.bytes[2],
+				destIP.bytes[3], destPort, serverRedirect->address[0], serverRedirect->address[1], serverRedirect->address[2],
+				serverRedirect->address[3], serverRedirect->port);
+		}
 
 		ret = connect(client, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint));
 

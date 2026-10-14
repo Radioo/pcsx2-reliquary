@@ -10,6 +10,7 @@
 
 #include "net.h"
 #include "DEV9.h"
+#include "InetLoopbackPatch.h"
 #ifdef _WIN32
 #include "Win32/tap.h"
 #endif
@@ -49,6 +50,9 @@ void NetRxThread()
 
 void tx_put(NetPacket* pkt)
 {
+	if (!EmuConfig.DEV9.ServerRedirectUrl.empty())
+		InetLoopbackPatch::Ensure();
+
 	if (nif != nullptr)
 		nif->send(pkt);
 	//pkt must be copied if its not processed by here, since it can be allocated on the callers stack
@@ -128,7 +132,8 @@ void ReconfigureLiveNet(const Pcsx2Config& old_config)
 		{
 			//Reload Net if adapter changed
 			if (EmuConfig.DEV9.EthDevice != old_config.DEV9.EthDevice ||
-				EmuConfig.DEV9.EthApi != old_config.DEV9.EthApi)
+				EmuConfig.DEV9.EthApi != old_config.DEV9.EthApi ||
+				EmuConfig.DEV9.ServerRedirectUrl != old_config.DEV9.ServerRedirectUrl)
 			{
 				TermNet();
 				InitNet();

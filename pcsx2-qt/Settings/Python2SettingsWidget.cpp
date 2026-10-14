@@ -88,6 +88,12 @@ Python2SettingsWidget::Python2SettingsWidget(const GameList::Entry* entry, Setti
 	m_ui.patchFilePath->setEnabled(true);
 	connect(m_ui.patchFileBrowse, &QPushButton::clicked, this, &Python2SettingsWidget::onPatchFileBrowseClicked);
 
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.serverUrl, "Python2/Game", "ServerUrl", "");
+	m_ui.serverUrl->setEnabled(true);
+
+	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.pcbId, "Python2/Game", "PcbId", "");
+	m_ui.pcbId->setEnabled(true);
+
 	// I don't think there's not a very good way to get this directly from the PCSX2 backend
 	const std::string deviceApi = m_window->getStringValue("Python2/Game", "DeviceApi", "native").value();
 	std::vector<std::pair<std::string, std::string>> deviceApiList = {

@@ -90,6 +90,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.integerScaling, "EmuCore/GS", "IntegerScaling", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.PCRTCOffsets, "EmuCore/GS", "pcrtc_offsets", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.PCRTCOverscan, "EmuCore/GS", "pcrtc_overscan", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.PCRTCOverscanHorizontal, "EmuCore/GS", "pcrtc_overscan_horizontal", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.PCRTCAntiBlur, "EmuCore/GS", "pcrtc_antiblur", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_display.disableInterlaceOffset, "EmuCore/GS", "disable_interlace_offset", false);
 	SettingWidgetBinder::BindWidgetToIntSetting(
@@ -470,6 +471,10 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 
 		dialog()->registerWidgetHelp(m_display.PCRTCOverscan, tr("Show Overscan"), tr("Unchecked"),
 			tr("Enables the option to show the overscan area on games which draw more than the safe area of the screen."));
+
+		dialog()->registerWidgetHelp(m_display.PCRTCOverscanHorizontal, tr("Horizontal Overscan"), tr("Checked"),
+			tr("With Show Overscan, also shows the overscan area at the left and right edges. Uncheck it to keep the full picture "
+			   "height without the blank side borders. Only used by the paraLLEl-GS renderer."));
 
 		dialog()->registerWidgetHelp(
 			m_display.fmvAspectRatio, tr("FMV Aspect Ratio Override"), tr("Off (Default)"),

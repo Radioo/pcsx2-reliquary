@@ -748,6 +748,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	DisableInterlaceOffset = false;
 	PCRTCOffsets = false;
 	PCRTCOverscan = false;
+	PCRTCOverscanHorizontal = true;
 	IntegerScaling = false;
 	LinearPresent = GSPostBilinearMode::BilinearSmooth;
 	UseDebugDevice = false;
@@ -1017,6 +1018,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBoolEx(DisableInterlaceOffset, "disable_interlace_offset");
 	SettingsWrapBitBoolEx(PCRTCOffsets, "pcrtc_offsets");
 	SettingsWrapBitBoolEx(PCRTCOverscan, "pcrtc_overscan");
+	SettingsWrapBitBoolEx(PCRTCOverscanHorizontal, "pcrtc_overscan_horizontal");
 	SettingsWrapBitBool(IntegerScaling);
 	SettingsWrapBitBool(UseDebugDevice);
 	SettingsWrapBitBool(UseBlitSwapChain);
@@ -1531,6 +1533,7 @@ bool Pcsx2Config::DEV9Options::operator==(const DEV9Options& right) const
 		   OpEqu(ModeDNS2) &&
 
 		   OpEqu(EthHosts) &&
+		   OpEqu(ServerRedirectUrl) &&
 
 		   OpEqu(HddEnable) &&
 		   OpEqu(HddFile) &&

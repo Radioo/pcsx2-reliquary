@@ -775,7 +775,10 @@ bool GameList::GetPython2ListEntry(const std::string& path, GameList::Entry* ent
 	sif->SetBoolValue("DEV9/Eth", "EthEnable", true);
 	sif->SetBoolValue("EmuCore/Gamefixes", "OPHFlagHack", true);
 	sif->SetBoolValue("EmuCore/GS", "pcrtc_offsets", false);
-	sif->SetBoolValue("EmuCore/GS", "pcrtc_overscan", true);
+	if (!sif->ContainsValue("EmuCore/GS", "pcrtc_overscan"))
+		sif->SetBoolValue("EmuCore/GS", "pcrtc_overscan", true);
+	if (!sif->ContainsValue("EmuCore/GS", "pcrtc_overscan_horizontal"))
+		sif->SetBoolValue("EmuCore/GS", "pcrtc_overscan_horizontal", false);
 
 	if (!sif->ContainsValue("Python2/Game", "DongleBlackFile")) {
 		std::string dongleBlackFile;
@@ -835,6 +838,13 @@ bool GameList::GetPython2ListEntry(const std::string& path, GameList::Entry* ent
 		}
 		if (!patchFile.empty())
 			sif->SetStringValue("Python2/Game", "PatchFile", patchFile.c_str());
+	}
+
+	for (const char* key : {"ServerUrl", "PcbId"})
+	{
+		const std::string value = new_interface->GetStringValue("Game", key);
+		if (!value.empty() && !sif->ContainsValue("Python2/Game", key))
+			sif->SetStringValue("Python2/Game", key, value.c_str());
 	}
 
 	bool dipsw_values[4] = {false, false, false, false};

@@ -300,6 +300,7 @@
     <ClCompile Include="DEV9\Sessions\UDP_Session\UDP_Session.cpp" />
     <ClCompile Include="DEV9\smap.cpp" />
     <ClCompile Include="DEV9\sockets.cpp" />
+    <ClCompile Include="DEV9\InetLoopbackPatch.cpp" />
     <ClCompile Include="DEV9\net.cpp" />
     <ClCompile Include="DEV9\Win32\tap-win32.cpp" />
     <ClCompile Include="GameList.cpp" />
@@ -571,12 +572,15 @@
     <ClCompile Include="USB\usb-python2\devices\thrilldrive_belt.cpp" />
     <ClCompile Include="USB\usb-python2\devices\thrilldrive_handle.cpp" />
     <ClCompile Include="USB\usb-python2\devices\toysmarch_drumpad.cpp" />
+    <ClCompile Include="USB\usb-python2\Python2BootPatch.cpp" />
+    <ClCompile Include="USB\usb-python2\Python2Dongle.cpp" />
     <ClCompile Include="USB\usb-python2\usb-python2.cpp" />
     <ClCompile Include="USB\USB.cpp" />
     <ClCompile Include="VMManager.cpp" />
     <ClCompile Include="windows\Optimus.cpp" />
     <ClCompile Include="Pcsx2Config.cpp" />
     <ClCompile Include="SaveState.cpp" />
+    <ClCompile Include="ServerUrl.cpp" />
     <ClCompile Include="SourceLog.cpp" />
     <ClCompile Include="Elfheader.cpp" />
     <ClCompile Include="CDVD\InputIsoFile.cpp" />
@@ -783,6 +787,7 @@
     <ClInclude Include="DEV9\InternalServers\DHCP_Server.h" />
     <ClInclude Include="DEV9\InternalServers\DNS_Logger.h" />
     <ClInclude Include="DEV9\InternalServers\DNS_Server.h" />
+    <ClInclude Include="DEV9\InetLoopbackPatch.h" />
     <ClInclude Include="DEV9\net.h" />
     <ClInclude Include="DEV9\PacketReader\ARP\ARP_Packet.h" />
     <ClInclude Include="DEV9\PacketReader\ARP\ARP_PacketEditor.h" />
@@ -1052,6 +1057,8 @@
     <ClInclude Include="USB\usb-python2\devices\thrilldrive_belt.h" />
     <ClInclude Include="USB\usb-python2\devices\thrilldrive_handle.h" />
     <ClInclude Include="USB\usb-python2\devices\toysmarch_drumpad.h" />
+    <ClInclude Include="USB\usb-python2\Python2BootPatch.h" />
+    <ClInclude Include="USB\usb-python2\Python2Dongle.h" />
     <ClInclude Include="USB\usb-python2\usb-python2.h" />
     <ClInclude Include="USB\USB.h" />
     <ClInclude Include="Utilities\AsciiFile.h" />
@@ -1063,6 +1070,7 @@
     <ClInclude Include="Config.h" />
     <ClInclude Include="ChdHddImage.h" />
     <ClInclude Include="SaveState.h" />
+    <ClInclude Include="ServerUrl.h" />
     <ClInclude Include="Counters.h" />
     <ClInclude Include="Dmac.h" />
     <ClInclude Include="Hardware.h" />

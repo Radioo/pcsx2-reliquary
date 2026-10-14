@@ -122,6 +122,7 @@ set(pcsx2Sources
 	R5900OpcodeImpl.cpp
 	R5900OpcodeTables.cpp
 	SaveState.cpp
+	ServerUrl.cpp
 	ShiftJisToUnicode.cpp
 	Sif.cpp
 	Sif0.cpp
@@ -205,6 +206,7 @@ set(pcsx2Headers
 	R5900.h
 	R5900OpcodeTables.h
 	SaveState.h
+	ServerUrl.h
 	ShaderCacheVersion.h
 	Sifcmd.h
 	Sif.h
@@ -343,6 +345,7 @@ set(pcsx2DEV9Sources
 	DEV9/flash.cpp
 	DEV9/pcap_io.cpp
 	DEV9/net.cpp
+	DEV9/InetLoopbackPatch.cpp
 	)
 
 # DEV9 headers
@@ -351,6 +354,7 @@ set(pcsx2DEV9Headers
 	DEV9/ATA/ATA.h
 	DEV9/ATA/HddCreate.h
 	DEV9/DEV9.h
+	DEV9/InetLoopbackPatch.h
 	DEV9/InternalServers/DHCP_Logger.h
 	DEV9/InternalServers/DHCP_Server.h
 	DEV9/InternalServers/DNS_Logger.h
@@ -402,6 +406,8 @@ set(pcsx2USBSources
 	USB/qemu-usb/usb-ohci.cpp
 	USB/shared/ringbuffer.cpp
 	USB/usb-perfect-pool-camera/perfect-pool-camera.cpp
+    USB/usb-python2/Python2BootPatch.cpp
+    USB/usb-python2/Python2Dongle.cpp
     USB/usb-python2/usb-python2.cpp
     USB/usb-python2/devices/acio.cpp
     USB/usb-python2/devices/ddr_extio.cpp
@@ -444,6 +450,8 @@ set(pcsx2USBHeaders
 	USB/qemu-usb/qusb.h
 	USB/shared/ringbuffer.h
 	USB/usb-perfect-pool-camera/perfect-pool-camera.h
+    USB/usb-python2/Python2BootPatch.h
+    USB/usb-python2/Python2Dongle.h
     USB/usb-python2/usb-python2.h
     USB/usb-python2/devices/acio.h
     USB/usb-python2/devices/ddr_extio.h

@@ -633,6 +633,10 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 						GSConfig.PGSPhosphorPrimaries != PGS_CRT_NONE ||
 						GSConfig.PCRTCOverscan;
 
+		info.overscan_horizontal = GSConfig.PGSTVEmulation != PGS_TV_EMULATION_NONE ||
+								   GSConfig.PGSPhosphorPrimaries != PGS_CRT_NONE ||
+								   GSConfig.PCRTCOverscanHorizontal;
+
 		info.crtc_offsets = GSConfig.PGSDisableCRTCEnhancements || GSConfig.PCRTCOffsets;
 
 		info.dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;

@@ -100,6 +100,11 @@ namespace InternalServers
 		LoadHostList();
 	}
 
+	void DNS_Server::SetRedirectAddress(PacketReader::IP::IP_Address address)
+	{
+		redirectAddress = address;
+	}
+
 	void DNS_Server::LoadHostList()
 	{
 		hosts.clear();
@@ -165,6 +170,12 @@ namespace InternalServers
 
 			for (size_t i = 0; i < reqs.size(); i++)
 			{
+				if (redirectAddress.has_value())
+				{
+					if (state->AddAnswer(reqs[i], redirectAddress.value()) == 0)
+						FinaliseDNS(state);
+					continue;
+				}
 				if (CheckHostList(reqs[i], state))
 					continue;
 				GetHost(reqs[i], state);

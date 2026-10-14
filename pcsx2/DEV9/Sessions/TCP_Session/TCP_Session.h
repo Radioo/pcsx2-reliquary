@@ -16,6 +16,7 @@
 #include "DEV9/SimpleQueue.h"
 #include "DEV9/Sessions/BaseSession.h"
 #include "DEV9/PacketReader/IP/TCP/TCP_Packet.h"
+#include "ServerUrl.h"
 
 namespace Sessions
 {
@@ -54,6 +55,7 @@ namespace Sessions
 
 		u16 srcPort = 0;
 		u16 destPort = 0;
+		std::optional<ServerUrl::Endpoint> serverRedirect;
 
 		u16 maxSegmentSize = 1460; // Accesed by both in and out threads, but set only on connect thread
 		int windowScale = 0;
@@ -75,7 +77,7 @@ namespace Sessions
 		std::atomic<bool> myNumberACKed{true};
 
 	public:
-		TCP_Session(ConnectionKey parKey, PacketReader::IP::IP_Address parAdapterIP);
+		TCP_Session(ConnectionKey parKey, PacketReader::IP::IP_Address parAdapterIP, std::optional<ServerUrl::Endpoint> parServerRedirect);
 
 		virtual std::optional<ReceivedPayload> Recv();
 		virtual bool Send(PacketReader::IP::IP_Payload* payload);

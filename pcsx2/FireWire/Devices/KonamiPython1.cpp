@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "Host.h"
 #include "StateWrapper.h"
+#include "ServerUrl.h"
 
 #include "Input/InputManager.h"
 
@@ -3691,70 +3692,6 @@ namespace
 		return true;
 	}
 
-	std::string ParsePython1ServerHost(const std::string& url)
-	{
-		std::string host = url;
-		const size_t scheme_end = host.find("://");
-		if (scheme_end != std::string::npos)
-			host.erase(0, scheme_end + 3);
-
-		const size_t path_start = host.find('/');
-		if (path_start != std::string::npos)
-			host.erase(path_start);
-
-		const size_t port_start = host.rfind(':');
-		if (port_start != std::string::npos)
-			host.erase(port_start);
-
-		return host;
-	}
-
-	bool ResolvePython1ServerAddress(const std::string& host, std::array<u8, 4>* address)
-	{
-		if (host.empty())
-			return false;
-
-#ifdef _WIN32
-		static std::once_flag winsock_once;
-		std::call_once(winsock_once, []() {
-			WSADATA wsa_data;
-			WSAStartup(MAKEWORD(2, 2), &wsa_data);
-		});
-#endif
-
-		addrinfo hints = {};
-		hints.ai_family = AF_INET;
-		hints.ai_socktype = SOCK_STREAM;
-
-		addrinfo* results = nullptr;
-		if (getaddrinfo(host.c_str(), nullptr, &hints, &results) != 0 || results == nullptr)
-			return false;
-
-		const sockaddr_in* resolved = reinterpret_cast<const sockaddr_in*>(results->ai_addr);
-		std::memcpy(address->data(), &resolved->sin_addr, address->size());
-		freeaddrinfo(results);
-		return true;
-	}
-
-	u16 ParsePython1ServerPort(const std::string& url)
-	{
-		std::string authority = url;
-		const size_t scheme_end = authority.find("://");
-		if (scheme_end != std::string::npos)
-			authority.erase(0, scheme_end + 3);
-
-		const size_t path_start = authority.find('/');
-		if (path_start != std::string::npos)
-			authority.erase(path_start);
-
-		const size_t port_start = authority.rfind(':');
-		if (port_start == std::string::npos)
-			return 80;
-
-		const std::optional<u16> port = StringUtil::FromChars<u16>(authority.substr(port_start + 1));
-		return port.value_or(80);
-	}
-
 	void StartPython1ServerResolve()
 	{
 		const std::string url = GetPython1GamePath("ServerUrl", "PCSX2_FW_SERVER_URL");
@@ -3762,16 +3699,11 @@ namespace
 			return;
 
 		s_net_server_url = url;
-		s_net_server_port = ParsePython1ServerPort(url);
+		s_net_server_port = ServerUrl::Port(url);
 		s_net_server_address_valid = false;
 
-		std::string host = ParsePython1ServerHost(url);
-		s_net_resolve_future = std::async(std::launch::async, [host]() {
-			std::array<u8, 4> resolved = {};
-			if (!ResolvePython1ServerAddress(host, &resolved))
-				return std::optional<std::array<u8, 4>>();
-			return std::optional<std::array<u8, 4>>(resolved);
-		});
+		std::string host = ServerUrl::Host(url);
+		s_net_resolve_future = std::async(std::launch::async, [host]() { return ServerUrl::Resolve(host); });
 	}
 
 	void PumpPython1ServerResolve(bool wait_for_completion)

@@ -1,6 +1,10 @@
 add_pcsx2_test(core_test
+	inet_loopback_patch_tests.cpp
 	patch_tests.cpp
 	popn_card_tests.cpp
+	python2_boot_patch_tests.cpp
+	python2_dongle_tests.cpp
+	server_url_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )

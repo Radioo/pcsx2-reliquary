@@ -79,8 +79,9 @@ namespace Sessions
 			_OldMyNumbers.push_back(1);
 	}
 
-	TCP_Session::TCP_Session(ConnectionKey parKey, IP_Address parAdapterIP)
+	TCP_Session::TCP_Session(ConnectionKey parKey, IP_Address parAdapterIP, std::optional<ServerUrl::Endpoint> parServerRedirect)
 		: BaseSession(parKey, parAdapterIP)
+		, serverRedirect(parServerRedirect)
 	{
 	}
 

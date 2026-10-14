@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include <bit>
+
 #include "common/Assertions.h"
 #include "common/StringUtil.h"
 #include "common/ScopedGuard.h"
@@ -152,6 +154,22 @@ SocketAdapter::SocketAdapter()
 	const IP_Address gateway = internalIP;
 
 	InitInternalServer(&adapter, true, ps2IP, subnet, gateway);
+
+	if (!EmuConfig.DEV9.ServerRedirectUrl.empty())
+	{
+		const std::string& url = EmuConfig.DEV9.ServerRedirectUrl;
+		const std::optional<ServerUrl::Address> address = ServerUrl::Resolve(ServerUrl::Host(url));
+		if (!address.has_value())
+		{
+			Console.Error("DEV9: Socket: Could not resolve server '%s', staying offline", url.c_str());
+			return;
+		}
+
+		serverRedirect = ServerUrl::Endpoint{address.value(), ServerUrl::Port(url)};
+		dnsServer.SetRedirectAddress(std::bit_cast<IP_Address>(address.value()));
+		Console.WriteLn("DEV9: Socket: Every DNS answer and TCP connection goes to %u.%u.%u.%u:%u ('%s')", serverRedirect->address[0],
+			serverRedirect->address[1], serverRedirect->address[2], serverRedirect->address[3], serverRedirect->port, url.c_str());
+	}
 
 	std::optional<MAC_Address> adMAC = AdapterUtils::GetAdapterMAC(&adapter);
 	if (adMAC.has_value())
@@ -475,7 +493,7 @@ bool SocketAdapter::SendTCP(ConnectionKey Key, IP_Packet* ipPkt)
 	else
 	{
 		Console.WriteLn("DEV9: Socket: Creating New TCP Connection to %d", tcp.destinationPort);
-		TCP_Session* s = new TCP_Session(Key, adapterIP);
+		TCP_Session* s = new TCP_Session(Key, adapterIP, serverRedirect);
 
 		s->AddConnectionClosedHandler([&](BaseSession* session) { HandleConnectionClosed(session); });
 		s->destIP = ipPkt->destinationIP;

@@ -3,6 +3,7 @@
 
 #pragma once
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "net.h"
@@ -12,6 +13,7 @@
 #include "Sessions/BaseSession.h"
 #include "SimpleQueue.h"
 #include "ThreadSafeMap.h"
+#include "ServerUrl.h"
 
 class SocketAdapter : public NetAdapter
 {
@@ -23,6 +25,7 @@ class SocketAdapter : public NetAdapter
 #endif
 	bool initialized = false;
 	PacketReader::IP::IP_Address adapterIP;
+	std::optional<ServerUrl::Endpoint> serverRedirect;
 
 	ThreadSafeMap<Sessions::ConnectionKey, Sessions::BaseSession*> connections;
 	ThreadSafeMap<u16, Sessions::BaseSession*> fixedUDPPorts;

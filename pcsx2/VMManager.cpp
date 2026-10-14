@@ -106,7 +106,7 @@ namespace VMManager
 	static void WarnAboutUnsafeSettings();
 
 	static void ApplyPythonBootParameters(const VMBootParameters& boot_params);
-	static void ApplyPythonDeviceSettings();
+	static void ApplyPythonDeviceSettings(SettingsInterface& si);
 	static bool IsPythonGameFileName(const std::string_view filename);
 	static bool LoadPythonGameBootParameters(const std::string& filename, VMBootParameters* params, Error* error);
 	static bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
@@ -676,7 +676,7 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	SettingsLoadWrapper slw(si);
 	EmuConfig.LoadSave(slw);
 	Patch::ApplyPatchSettingOverrides();
-	ApplyPythonDeviceSettings();
+	ApplyPythonDeviceSettings(si);
 
 	// Achievements hardcore mode disallows setting some configuration options.
 	EnforceAchievementsChallengeModeSettings();
@@ -1388,14 +1388,28 @@ void VMManager::ApplyPythonBootParameters(const VMBootParameters& boot_params)
 	}
 }
 
-void VMManager::ApplyPythonDeviceSettings()
+void VMManager::ApplyPythonDeviceSettings(SettingsInterface& si)
 {
 	FireWire::SetConfigDeviceOverride(s_is_python1 ? "KonamiPython1" : nullptr);
+	EmuConfig.DEV9.ServerRedirectUrl.clear();
 
 	if (s_is_python2)
 	{
 		EmuConfig.USB.Ports[0].DeviceType = USB::DeviceTypeNameToIndex("python2io");
 		EmuConfig.USB.Ports[0].DeviceSubtype = 0;
+
+		const std::string server_url = si.GetStringValue("Python2/Game", "ServerUrl", "");
+		if (!server_url.empty())
+		{
+			if (EmuConfig.DEV9.EthApi != Pcsx2Config::DEV9Options::NetApi::Sockets || EmuConfig.DEV9.EthDevice.empty())
+				EmuConfig.DEV9.EthDevice = "Auto";
+			EmuConfig.DEV9.EthEnable = true;
+			EmuConfig.DEV9.EthApi = Pcsx2Config::DEV9Options::NetApi::Sockets;
+			EmuConfig.DEV9.InterceptDHCP = true;
+			EmuConfig.DEV9.ModeDNS1 = Pcsx2Config::DEV9Options::DnsMode::Internal;
+			EmuConfig.DEV9.ModeDNS2 = Pcsx2Config::DEV9Options::DnsMode::Internal;
+			EmuConfig.DEV9.ServerRedirectUrl = server_url;
+		}
 	}
 }
 

@@ -791,6 +791,7 @@ struct Pcsx2Config
 					DisableInterlaceOffset : 1,
 					PCRTCOffsets : 1,
 					PCRTCOverscan : 1,
+					PCRTCOverscanHorizontal : 1,
 					IntegerScaling : 1,
 					UseDebugDevice : 1,
 					UseDebugBlend : 1,
@@ -1122,6 +1123,7 @@ struct Pcsx2Config
 		DnsMode ModeDNS2{DnsMode::Auto};
 
 		std::vector<HostEntry> EthHosts;
+		std::string ServerRedirectUrl;
 
 		bool HddEnable{false};
 		std::string HddFile;
