@@ -232,6 +232,7 @@ enum class AspectRatioType : u8
 	R4_3,
 	R16_9,
 	R10_7,
+	SquarePixels,
 	MaxCount
 };
 
@@ -708,6 +709,8 @@ struct Pcsx2Config
 		BITFIELD32()
 		bool
 			ExtraMemory : 1,
+			EnableEERAMReadTiming : 1,
+			EnableEEInstructionCacheTiming : 1,
 			FPUSoftFloat : 1,
 			VU0SoftFloat : 1,
 			VU1SoftFloat : 1;

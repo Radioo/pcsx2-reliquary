@@ -3,6 +3,7 @@
 
 #include "CDVD/BlockdumpFileReader.h"
 #include "CDVD/ChdFileReader.h"
+#include "CDVD/CueFileReader.h"
 #include "CDVD/CsoFileReader.h"
 #include "CDVD/FlatFileReader.h"
 #include "CDVD/GzippedFileReader.h"
@@ -43,6 +44,9 @@ static std::unique_ptr<ThreadedFileReader> GetFileReader(const std::string& path
 
 	if (StringUtil::compareNoCase(extension, "chd"))
 		return std::make_unique<ChdFileReader>();
+
+	if (StringUtil::compareNoCase(extension, "cue"))
+		return std::make_unique<CueFileReader>();
 
 	if (StringUtil::compareNoCase(extension, "cso") || StringUtil::compareNoCase(extension, "zso"))
 		return std::make_unique<CsoFileReader>();

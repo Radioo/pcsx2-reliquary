@@ -262,6 +262,8 @@ bool GSRendererPGS::Init()
 	opts.super_sampled_textures = GSConfig.PGSSuperSampleTextures != 0;
 	if (!iface.init(&wsi.get_device(), opts))
 		return false;
+	if (!SetGPUTimingEnabled(true))
+		GSConfig.OsdShowGPU = false;
 
 	current_super_sampling = opts.super_sampling;
 	current_ordered_super_sampling = opts.ordered_super_sampling;
@@ -280,6 +282,52 @@ bool GSRendererPGS::Init()
 		return false;
 
 	return true;
+}
+
+bool GSRendererPGS::SetGPUTimingEnabled(bool enabled)
+{
+	const auto &dev = device.get_device();
+	const auto &props = dev.get_gpu_properties();
+	const bool supported = props.limits.timestampComputeAndGraphics != 0 &&
+	                       dev.get_queue_info().timestamp_valid_bits > 0 && props.limits.timestampPeriod > 0.0f;
+	if (enabled && !supported)
+		return false;
+
+	DebugMode debug_mode = {};
+	debug_mode.timestamps = enabled;
+	iface.set_debug_mode(debug_mode);
+	gpu_timing_enabled = enabled;
+
+	last_gpu_timestamp = 0.0;
+	for (int i = 0; i < static_cast<int>(TimestampType::Count); i++)
+		last_gpu_timestamp += iface.get_accumulated_timestamps(static_cast<TimestampType>(i));
+
+	return true;
+}
+
+float GSRendererPGS::GetAndResetAccumulatedGPUTime()
+{
+	if (!gpu_timing_enabled)
+		return 0.0f;
+
+	double gpu_timestamp = 0.0;
+	for (int i = 0; i < static_cast<int>(TimestampType::Count); i++)
+		gpu_timestamp += iface.get_accumulated_timestamps(static_cast<TimestampType>(i));
+
+	double gpu_time = std::max(gpu_timestamp - last_gpu_timestamp, 0.0);
+	last_gpu_timestamp = gpu_timestamp;
+
+	auto timestamp_it = gpu_timestamps.begin();
+	for (; timestamp_it != gpu_timestamps.end() && timestamp_it->start->is_signalled() &&
+	       timestamp_it->end->is_signalled();
+	     timestamp_it++)
+	{
+		gpu_time += device.get_device().convert_device_timestamp_delta(timestamp_it->start->get_timestamp_ticks(),
+		                                                               timestamp_it->end->get_timestamp_ticks());
+	}
+	gpu_timestamps.erase(gpu_timestamps.begin(), timestamp_it);
+
+	return static_cast<float>(gpu_time * 1000.0);
 }
 
 void GSRendererPGS::Reset(bool /*hardware_reset*/)
@@ -668,8 +716,6 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 
 		if (frame_is_duped && !GSConfig.SkipDuplicateFrames)
 			wsi.set_next_present_is_duplicated();
-
-		PerformanceMetrics::Update(registers_written, last_frame_stats.num_render_passes != 0, false);
 	}
 
 	Host::BeginPresentFrame();
@@ -681,8 +727,20 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 		return;
 	}
 
+	if (!refresh_frame)
+	{
+		PerformanceMetrics::OnGPUPresent(GetAndResetAccumulatedGPUTime(), 0, 0);
+		PerformanceMetrics::Update(registers_written, last_frame_stats.num_render_passes != 0, false);
+	}
+
 	if (vsync.image)
 	{
+		// CRT emulation reconstructs interlaced frames from field images during presentation.
+		last_presentation_size = GSVector2i(static_cast<int>(vsync.image->get_width()), static_cast<int>(vsync.image->get_height()));
+
+		if (vsync.interlaced && vsync.image->get_height() == vsync.internal_height)
+			last_presentation_size.y *= 2;
+
 		last_internal_width = vsync.internal_width;
 		last_internal_height = vsync.internal_height;
 		if (vsync.high_resolution_scanout)
@@ -691,6 +749,8 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 			last_internal_height *= 2;
 		}
 	}
+
+	const GSVector2i source_size = GetPresentationSourceSize();
 
 	CRTFilter::FilterOptions crt_filter_options = {};
 
@@ -737,8 +797,6 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 	{
 		// Are these values 100% accurate?
 		float fps = priv->smode1.LC == SMODE1Bits::LC_ANALOG && priv->smode1.CMOD == SMODE1Bits::CMOD_PAL ? 50.0f : 59.94f;
-		// exception for Arcade VGA
-		if (priv->smode1.LC == SMODE1Bits::LC_VESA_640x480) fps = 59.94f;
 		uint64_t target_period_ns = 1000000000ull / fps;
 		bool force_vrr = false;
 
@@ -884,37 +942,55 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 
 		if (vsync.image)
 		{
-			uint32_t new_width = output_width;
-			uint32_t new_height = output_height;
-
-			float display_aspect = float(output_width) / float(output_height);
-			float game_aspect = GetCurrentAspectRatioFloat(priv->smode1.CMOD == 0);
-
-			float horizontal_scanout_ratio = float(vsync.internal_width) / float(vsync.mode_width);
-			float vertical_scanout_ratio = float(vsync.internal_height) / float(vsync.mode_height);
-			game_aspect *= horizontal_scanout_ratio / vertical_scanout_ratio;
-			last_display_aspect_ratio = game_aspect;
-
-			if (display_aspect > game_aspect)
-				new_width = uint32_t(std::round(float(output_height) * game_aspect));
-			else
-				new_height = uint32_t(std::round(float(output_width) / game_aspect));
-
-			// This won't preserve the aspect ratio necessarily, but eh.
-			if (GSConfig.IntegerScaling)
+			if (EmuConfig.CurrentAspectRatio == AspectRatioType::SquarePixels)
 			{
-				new_width -= new_width % vsync.image->get_width();
-				new_height -= new_height % vsync.image->get_height();
-				if (new_width == 0)
-					new_width = output_width;
-				if (new_height == 0)
-					new_height = output_height;
-			}
+				const GSVector2i window_size(static_cast<int>(output_width), static_cast<int>(output_height));
+				const GSVector4 rect = GSCalculateSquarePixelRect(window_size, source_size, GSDisplayAlignment::Center, false);
 
-			vp_offset_x = std::round(0.5f * float(output_width - new_width));
-			output_width = new_width;
-			vp_offset_y = std::round(0.5f * float(output_height - new_height));
-			output_height = new_height;
+				last_display_aspect_ratio = GSGetCurrentAspectRatio();
+
+				vp_offset_x = rect.x;
+				vp_offset_y = rect.y;
+
+				output_width = static_cast<uint32_t>(rect.z - rect.x);
+				output_height = static_cast<uint32_t>(rect.w - rect.y);
+			}
+			else
+			{
+				uint32_t new_width = output_width;
+				uint32_t new_height = output_height;
+
+				float display_aspect = float(output_width) / float(output_height);
+				float game_aspect = GSGetCurrentAspectRatio();
+
+				float horizontal_scanout_ratio = float(vsync.internal_width) / float(vsync.mode_width);
+				float vertical_scanout_ratio = float(vsync.internal_height) / float(vsync.mode_height);
+				game_aspect *= horizontal_scanout_ratio / vertical_scanout_ratio;
+				last_display_aspect_ratio = game_aspect;
+
+				if (display_aspect > game_aspect)
+					new_width = uint32_t(std::round(float(output_height) * game_aspect));
+				else
+					new_height = uint32_t(std::round(float(output_width) / game_aspect));
+
+				if (GSConfig.IntegerScaling)
+				{
+					const float scale = (vsync.image->get_width() >= vsync.image->get_height()) ?
+											static_cast<float>(new_width) / vsync.image->get_width() :
+											static_cast<float>(new_height) / vsync.image->get_height();
+					if (scale > 1.0f)
+					{
+						const float adjust = std::floor(scale) / scale;
+						new_width = std::max(1u, static_cast<uint32_t>(std::round(new_width * adjust)));
+						new_height = std::max(1u, static_cast<uint32_t>(std::round(new_height * adjust)));
+					}
+				}
+
+				vp_offset_x = std::round(0.5f * float(output_width - new_width));
+				output_width = new_width;
+				vp_offset_y = std::round(0.5f * float(output_height - new_height));
+				output_height = new_height;
+			}
 
 			// Safeguard against ridiculous situations.
 			if (!output_width)
@@ -927,6 +1003,9 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 		}
 
 		auto cmd = dev.request_command_buffer();
+		QueryPoolHandle gpu_start_timestamp;
+		if (gpu_timing_enabled)
+			gpu_start_timestamp = cmd->write_timestamp(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
 		render_ui_prepare(*cmd);
 
@@ -1039,7 +1118,7 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 			crt_filter_options.bloom_strength = 1.2f * float(GSConfig.PGSPhosphorBloom) / 100.0f;
 
 			// For wide-screen, assume a more HD CRT TV style with far higher TVL.
-			float game_aspect = GetCurrentAspectRatioFloat(priv->smode1.CMOD == 0);
+			float game_aspect = GSGetCurrentAspectRatio();
 			crt_filter_options.tvl = uint32_t(480.0f * game_aspect);
 
 			crt_filter.run_filter_prepass(*cmd,
@@ -1061,6 +1140,13 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 		{
 			screenshot_width = static_cast<u32>(std::max(1.0f, std::round(vp_width)));
 			screenshot_height = static_cast<u32>(std::max(1.0f, std::round(vp_height)));
+
+			if (EmuConfig.CurrentAspectRatio == AspectRatioType::SquarePixels && GSConfig.ScreenshotSize >= GSScreenshotSize::InternalResolution)
+			{
+				screenshot_width = static_cast<u32>(source_size.x);
+				screenshot_height = static_cast<u32>(source_size.y);
+			}
+
 			const VkFormat screenshot_format =
 				wsi.get_backbuffer_format() == BackbufferFormat::sRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 			auto screenshot_info = ImageCreateInfo::render_target(
@@ -1133,6 +1219,11 @@ void GSRendererPGS::VSync(u32 field, bool registers_written, bool refresh_frame)
 		render_ui_flush(*cmd);
 		cmd->end_render_pass();
 
+		if (gpu_timing_enabled)
+		{
+			auto gpu_end_timestamp = cmd->write_timestamp(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+			gpu_timestamps.push_back({ std::move(gpu_start_timestamp), std::move(gpu_end_timestamp) });
+		}
 		dev.submit(cmd);
 		if (screenshot_readback || screenshot_failed)
 		{

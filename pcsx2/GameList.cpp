@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "CDVD/CDVD.h"
+#include "CDVD/CueFileReader.h"
 #include "Elfheader.h"
 #include "FireWire/Devices/PopnCard.h"
 #include "GameList.h"
@@ -40,7 +41,7 @@ namespace GameList
 	enum : u32
 	{
 		GAME_LIST_CACHE_SIGNATURE = 0x45434C47,
-		GAME_LIST_CACHE_VERSION = 39,
+		GAME_LIST_CACHE_VERSION = 41,
 
 
 		PLAYED_TIME_SERIAL_LENGTH = 32,
@@ -59,6 +60,8 @@ namespace GameList
 	using PlayedTimeMap = UnorderedStringMap<PlayedTimeEntry>;
 
 	static bool IsScannableFilename(const std::string_view path);
+	static std::string GetPathKey(const std::string_view path);
+	static UnorderedStringSet FindCueDataFiles(const FileSystem::FindResultsArray& files);
 
 	static bool GetIsoSerialAndCRC(const std::string& path, s32* disc_type, std::string* serial, u32* crc);
 	static Region ParseDatabaseRegion(const std::string_view db_region);
@@ -115,6 +118,7 @@ const char* GameList::EntryTypeToString(EntryType type, bool translate)
 		TRANSLATE_NOOP("GameList", "Python 2"),
 		TRANSLATE_NOOP("GameList", "Invalid"),
 		TRANSLATE_NOOP("GameList", "DVD-Video"),
+		TRANSLATE_NOOP("GameList", "Audio CD"),
 	};
 
 	const char* name = names.at(static_cast<int>(type));
@@ -245,6 +249,34 @@ bool GameList::IsScannableFilename(const std::string_view path)
 	return VMManager::IsDiscFileName(path) || VMManager::IsElfFileName(path);
 }
 
+std::string GameList::GetPathKey(const std::string_view path)
+{
+#ifdef _WIN32
+	return StringUtil::toLower(Path::Canonicalize(path));
+#else
+	return Path::Canonicalize(path);
+#endif
+}
+
+UnorderedStringSet GameList::FindCueDataFiles(const FileSystem::FindResultsArray& files)
+{
+	UnorderedStringSet paths;
+	for (const FILESYSTEM_FIND_DATA& file : files)
+	{
+		if (!StringUtil::EndsWithNoCase(file.FileName, ".cue"))
+			continue;
+
+		CueFileReader cue;
+		if (!cue.Open(file.FileName, nullptr))
+			continue;
+
+		for (const std::string& path : cue.GetDataFiles())
+			paths.emplace(GetPathKey(path));
+	}
+
+	return paths;
+}
+
 void GameList::FillBootParametersForEntry(VMBootParameters* params, const Entry* entry)
 {
 	params->is_python1 = false;
@@ -255,13 +287,13 @@ void GameList::FillBootParametersForEntry(VMBootParameters* params, const Entry*
 	params->python2_serial = "";
 	params->python2_patch_file = "";
 
-	if (entry->type == GameList::EntryType::PS1Disc || entry->type == GameList::EntryType::PS2Disc || entry->type == GameList::EntryType::DVDVideo)
+	if (entry->IsDisc())
 	{
 		params->filename = entry->path;
 		params->source_type = CDVD_SourceType::Iso;
 		params->elf_override.clear();
 
-		if (entry->type == GameList::EntryType::DVDVideo)
+		if (entry->type == GameList::EntryType::DVDVideo || entry->type == GameList::EntryType::AudioCD)
 			params->fast_boot = false;
 	}
 	else if (entry->type == GameList::EntryType::ELF)
@@ -345,6 +377,13 @@ void GameList::GetDVDVideoSerialAndCRCForPath(const std::string_view path, std::
 	*crc = path_crc;
 }
 
+void GameList::GetAudioCDSerialAndCRCForPath(const std::string_view path, std::string* serial, u32* crc)
+{
+	const u32 path_crc = HashPathForUniqueId(path);
+	*serial = fmt::format("CDDA-{:08X}", path_crc);
+	*crc = path_crc;
+}
+
 std::string GameList::CleanPythonGameId(std::string_view game_id)
 {
 	std::string ret;
@@ -415,7 +454,7 @@ bool GameList::GetIsoSerialAndCRC(const std::string& path, s32* disc_type, std::
 
 	// TODO: we could include the version in the game list?
 	*disc_type = DoCDVDdetectDiskType();
-	if (*disc_type == CDVD_TYPE_DVDV)
+	if (*disc_type == CDVD_TYPE_DVDV || *disc_type == CDVD_TYPE_CDDA)
 	{
 		serial->clear();
 		*crc = 0;
@@ -562,6 +601,10 @@ bool GameList::GetIsoListEntry(const std::string& path, GameList::Entry* entry)
 			entry->type = EntryType::DVDVideo;
 			break;
 
+		case CDVD_TYPE_CDDA:
+			entry->type = EntryType::AudioCD;
+			break;
+
 		case CDVD_TYPE_ILLEGAL:
 		default:
 		{
@@ -579,9 +622,12 @@ bool GameList::GetIsoListEntry(const std::string& path, GameList::Entry* entry)
 	entry->path = path;
 	entry->total_size = sd.Size;
 	entry->compatibility_rating = CompatibilityRating::Unknown;
-	if (entry->type == EntryType::DVDVideo)
+	if (entry->type == EntryType::DVDVideo || entry->type == EntryType::AudioCD)
 	{
-		GetDVDVideoSerialAndCRCForPath(path, &entry->serial, &entry->crc);
+		if (entry->type == EntryType::AudioCD)
+			GetAudioCDSerialAndCRCForPath(path, &entry->serial, &entry->crc);
+		else
+			GetDVDVideoSerialAndCRCForPath(path, &entry->serial, &entry->crc);
 		entry->title = Path::GetFileTitle(path);
 		entry->region = Region::Other;
 		return true;
@@ -1150,6 +1196,7 @@ void GameList::ScanDirectory(const char* path, bool recursive, bool only_cache, 
 		recursive ? (FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES | FILESYSTEM_FIND_RECURSIVE) :
 					(FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES),
 		&files, progress);
+	const UnorderedStringSet cue_data_files = FindCueDataFiles(files);
 
 	u32 files_scanned = 0;
 	progress->SetProgressRange(static_cast<u32>(files.size()));
@@ -1159,7 +1206,8 @@ void GameList::ScanDirectory(const char* path, bool recursive, bool only_cache, 
 	{
 		files_scanned++;
 
-		if (progress->IsCancelled() || !GameList::IsScannableFilename(ffd.FileName) || IsPathExcluded(excluded_paths, ffd.FileName))
+		if (progress->IsCancelled() || !GameList::IsScannableFilename(ffd.FileName) || IsPathExcluded(excluded_paths, ffd.FileName) ||
+			cue_data_files.contains(GetPathKey(ffd.FileName)))
 		{
 			continue;
 		}
@@ -1412,6 +1460,8 @@ bool GameList::GetSerialAndCRCForFilename(const char* filename, std::string* ser
 	{
 		if (entry->type == EntryType::DVDVideo && entry->serial.empty())
 			GetDVDVideoSerialAndCRCForPath(filename, serial, crc);
+		else if (entry->type == EntryType::AudioCD && entry->serial.empty())
+			GetAudioCDSerialAndCRCForPath(filename, serial, crc);
 		else
 		{
 			*serial = entry->serial;

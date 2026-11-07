@@ -74,7 +74,7 @@ bool MemoryCardListWidget::MemoryCardListItem::operator<(const QTreeWidgetItem& 
 	if (column == MemoryCardListColumn::LastModified)
 	{
 		return data(MemoryCardListColumn::LastModified, Qt::UserRole).toLongLong() <
-				other.data(MemoryCardListColumn::LastModified, Qt::UserRole).toLongLong();
+		       other.data(MemoryCardListColumn::LastModified, Qt::UserRole).toLongLong();
 	}
 	return text(column).localeAwareCompare(other.text(column)) < 0;
 }

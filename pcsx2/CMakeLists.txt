@@ -75,6 +75,7 @@ set(pcsx2Sources
 	COP2.cpp
 	Counters.cpp
 	Dmac.cpp
+	EEMemoryTiming.cpp
 	GameDatabase.cpp
 	Elfheader.cpp
 	FireWire/FireWire.cpp
@@ -89,6 +90,7 @@ set(pcsx2Sources
 	Gif_Unit.cpp
 	GS.cpp
 	GSDumpReplayer.cpp
+	HddImageOperations.cpp
 	Host.cpp
 	Hotkeys.cpp
 	Hw.cpp
@@ -138,6 +140,7 @@ set(pcsx2Sources
 	SourceLog.cpp
 	SPR.cpp
 	StateWrapper.cpp
+	VhdHddImage.cpp
 	Vif0_Dma.cpp
 	Vif1_Dma.cpp
 	Vif1_MFIFO.cpp
@@ -169,6 +172,7 @@ set(pcsx2Headers
 	COP0.h
 	Counters.h
 	Dmac.h
+	EEMemoryTiming.h
 	FireWire/FireWire.h
 	FireWire/FireWireDevice.h
 	FireWire/deviceproxy.h
@@ -182,6 +186,7 @@ set(pcsx2Headers
 	GS.h
 	GSDumpReplayer.h
 	Hardware.h
+	HddImageOperations.h
 	Host.h
 	Hw.h
 	INISettingsInterface.h
@@ -221,6 +226,7 @@ set(pcsx2Headers
 	SPR.h
 	SupportURLs.h
 	StateWrapper.h
+	VhdHddImage.h
 	Vif_Dma.h
 	Vif.h
 	Vif_Unpack.h
@@ -245,6 +251,7 @@ set(pcsx2CDVDSources
 	CDVD/IsoReader.cpp
 	CDVD/OutputIsoFile.cpp
 	CDVD/ChdFileReader.cpp
+	CDVD/CueFileReader.cpp
 	CDVD/CsoFileReader.cpp
 	CDVD/GzippedFileReader.cpp
 	CDVD/ThreadedFileReader.cpp
@@ -259,6 +266,7 @@ set(pcsx2CDVDHeaders
 	CDVD/CDVD_internal.h
 	CDVD/CDVDdiscReader.h
 	CDVD/ChdFileReader.h
+	CDVD/CueFileReader.h
 	CDVD/CsoFileReader.h
 	CDVD/FlatFileReader.h
 	CDVD/GzippedFileReader.h
@@ -408,6 +416,7 @@ set(pcsx2USBSources
 	USB/usb-perfect-pool-camera/perfect-pool-camera.cpp
     USB/usb-python2/Python2BootPatch.cpp
     USB/usb-python2/Python2Dongle.cpp
+    USB/usb-python2/ddr-hardware.cpp
     USB/usb-python2/usb-python2.cpp
     USB/usb-python2/devices/acio.cpp
     USB/usb-python2/devices/ddr_extio.cpp
@@ -452,6 +461,7 @@ set(pcsx2USBHeaders
 	USB/usb-perfect-pool-camera/perfect-pool-camera.h
     USB/usb-python2/Python2BootPatch.h
     USB/usb-python2/Python2Dongle.h
+    USB/usb-python2/ddr-hardware.h
     USB/usb-python2/usb-python2.h
     USB/usb-python2/devices/acio.h
     USB/usb-python2/devices/ddr_extio.h
@@ -1234,6 +1244,8 @@ target_link_libraries(PCSX2_FLAGS INTERFACE
 	imgui
 	fmt::fmt
 	libchdr
+	minivhd
+	libcdio::libcdio
 	libzip::zip
 	cpuinfo
 	cubeb
@@ -1290,6 +1302,9 @@ else()
 endif()
 
 # additonal include directories
+if(WIN32)
+	target_include_directories(PCSX2 PRIVATE "${CMAKE_SOURCE_DIR}/3rdparty")
+endif()
 if(ARCH_X86)
 	target_include_directories(PCSX2_FLAGS INTERFACE "${CMAKE_SOURCE_DIR}/3rdparty/xbyak")
 	target_compile_definitions(PCSX2_FLAGS INTERFACE XBYAK_NO_EXCEPTION)

@@ -425,6 +425,9 @@
     </None>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="USB\usb-python2\ddr-hardware.cpp">
+      <Filter>System\Ps2\USB</Filter>
+    </ClCompile>
     <ClCompile Include="Patch.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
@@ -469,6 +472,15 @@
     </ClCompile>
     <ClCompile Include="ChdHddImage.cpp">
       <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="VhdHddImage.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="HddImageOperations.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="EEMemoryTiming.cpp">
+      <Filter>System\Ps2\EmotionEngine\Memory</Filter>
     </ClCompile>
     <ClCompile Include="Memory.cpp">
       <Filter>System\Ps2\EmotionEngine\Memory</Filter>
@@ -789,6 +801,9 @@
       <Filter>System\ISO</Filter>
     </ClCompile>
     <ClCompile Include="CDVD\CsoFileReader.cpp">
+      <Filter>System\ISO</Filter>
+    </ClCompile>
+    <ClCompile Include="CDVD\CueFileReader.cpp">
       <Filter>System\ISO</Filter>
     </ClCompile>
     <ClCompile Include="CDVD\GzippedFileReader.cpp">
@@ -1505,6 +1520,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="USB\usb-python2\ddr-hardware.h">
+      <Filter>System\Ps2\USB</Filter>
+    </ClInclude>
     <ClInclude Include="Patch.h">
       <Filter>Misc</Filter>
     </ClInclude>
@@ -1524,6 +1542,12 @@
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="ChdHddImage.h">
+      <Filter>System\Include</Filter>
+    </ClInclude>
+    <ClInclude Include="VhdHddImage.h">
+      <Filter>System\Include</Filter>
+    </ClInclude>
+    <ClInclude Include="HddImageOperations.h">
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="Config.h">
@@ -1548,6 +1572,9 @@
       <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="Cache.h">
+      <Filter>System\Ps2\EmotionEngine\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="EEMemoryTiming.h">
       <Filter>System\Ps2\EmotionEngine\Memory</Filter>
     </ClInclude>
     <ClInclude Include="Memory.h">
@@ -1752,6 +1779,9 @@
       <Filter>System\ISO</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\CsoFileReader.h">
+      <Filter>System\ISO</Filter>
+    </ClInclude>
+    <ClInclude Include="CDVD\CueFileReader.h">
       <Filter>System\ISO</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\GzippedFileReader.h">

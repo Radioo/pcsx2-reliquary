@@ -91,6 +91,8 @@ void endMacroOp(int mode)
 			// Normalize
 			mVUallocSFLAGc(eax, gprF0, 0);
 			xMOV(ptr32[&vu0Regs.VI[REG_STATUS_FLAG].UL], eax);
+			if (CHECK_VU_SOFT(0))
+				xMOV(ptr32[&vu0Regs.statusflag], eax);
 		}
 		else if (g_pCurInstInfo->info & (EEINST_COP2_STATUS_FLAG | EEINST_COP2_DENORMALIZE_STATUS_FLAG))
 		{
@@ -140,79 +142,6 @@ bool mVUIsReservedCOP2(int hostreg)
 		endMacroOp(_mode); \
 	}
 
-static void mVUemitCop2OpmFlagSync()
-{
-	xXOR(ecx, ecx);
-	xTEST(ptr32[&vu0Regs.macflag], 0x000f);
-	xForwardJZ8 no_zero;
-	xOR(ecx, 0x1);
-	no_zero.SetTarget();
-	xTEST(ptr32[&vu0Regs.macflag], 0x00f0);
-	xForwardJZ8 no_sign;
-	xOR(ecx, 0x2);
-	no_sign.SetTarget();
-	xTEST(ptr32[&vu0Regs.macflag], 0x0f00);
-	xForwardJZ8 no_underflow;
-	xOR(ecx, 0x4);
-	no_underflow.SetTarget();
-	xTEST(ptr32[&vu0Regs.macflag], 0xf000);
-	xForwardJZ8 no_overflow;
-	xOR(ecx, 0x8);
-	no_overflow.SetTarget();
-
-	xMOV(eax, ptr32[&vu0Regs.statusflag]);
-	xAND(eax, 0xfc0);
-	xOR(eax, ecx);
-	xMOV(ptr32[&vu0Regs.statusflag], eax);
-
-	xMOV(eax, ptr32[&vu0Regs.VI[REG_STATUS_FLAG].UL]);
-	xAND(eax, 0xff0);
-	xOR(eax, ecx);
-	xSHL(ecx, 6);
-	xOR(eax, ecx);
-	xMOV(ptr32[&vu0Regs.VI[REG_STATUS_FLAG].UL], eax);
-
-	xMOV(eax, ptr32[&vu0Regs.macflag]);
-	xMOV(ptr32[&vu0Regs.VI[REG_MAC_FLAG].UL], eax);
-}
-
-static void mVUemitCop2MaddFdUnderflowSync()
-{
-	std::optional<xForwardJump8> acc_x_nonzero;
-	std::optional<xForwardJump8> acc_y_nonzero;
-	std::optional<xForwardJump8> acc_z_nonzero;
-	std::optional<xForwardJump8> acc_w_nonzero;
-	if ((microVU0.code >> 24) & 0x1)
-	{
-		xTEST(ptr32[&vu0Regs.ACC.UL[0]], 0x7fffffff);
-		acc_x_nonzero.emplace(Jcc_NotZero);
-	}
-	if ((microVU0.code >> 23) & 0x1)
-	{
-		xTEST(ptr32[&vu0Regs.ACC.UL[1]], 0x7fffffff);
-		acc_y_nonzero.emplace(Jcc_NotZero);
-	}
-	if ((microVU0.code >> 22) & 0x1)
-	{
-		xTEST(ptr32[&vu0Regs.ACC.UL[2]], 0x7fffffff);
-		acc_z_nonzero.emplace(Jcc_NotZero);
-	}
-	if ((microVU0.code >> 21) & 0x1)
-	{
-		xTEST(ptr32[&vu0Regs.ACC.UL[3]], 0x7fffffff);
-		acc_w_nonzero.emplace(Jcc_NotZero);
-	}
-	xAND(ptr32[&vu0Regs.VI[REG_STATUS_FLAG].UL], ~0x100u);
-	if (acc_x_nonzero.has_value())
-		acc_x_nonzero->SetTarget();
-	if (acc_y_nonzero.has_value())
-		acc_y_nonzero->SetTarget();
-	if (acc_z_nonzero.has_value())
-		acc_z_nonzero->SetTarget();
-	if (acc_w_nonzero.has_value())
-		acc_w_nonzero->SetTarget();
-}
-
 static void mVUprepareCop2SoftGPRs()
 {
 	// Release caller-saved EE mappings and microVU's fixed flag registers.
@@ -223,7 +152,7 @@ static void mVUprepareCop2SoftGPRs()
 	_freeX86reg(gprF3);
 }
 
-#define REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, flushcheck, opm_sync, madd_fd_sync, mac_sync) \
+#define REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, flushcheck) \
 	void recV##f() \
 	{ \
 		if (flushcheck) \
@@ -241,34 +170,22 @@ static void mVUprepareCop2SoftGPRs()
 			mVU_##f(microVU0, 1); \
 		} \
 		endMacroOp(_mode); \
-		if (flushcheck) \
-		{ \
-			if (opm_sync) \
-				mVUemitCop2OpmFlagSync(); \
-			if (madd_fd_sync) \
-				mVUemitCop2MaddFdUnderflowSync(); \
-			if (mac_sync) \
-			{ \
-				xMOV(eax, ptr32[&vu0Regs.macflag]); \
-				xMOV(ptr32[&vu0Regs.VI[REG_MAC_FLAG].UL], eax); \
-			} \
-		} \
 	}
 
 #define REC_COP2_mVU0_ADDSUB(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), false, false, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_MUL(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), false, false, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_FMAC(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), false, false, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_FMAC_FD(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), false, true, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_OPM_MUL(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), true, false, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_OPM_FMAC(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), true, false, true)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 #define REC_COP2_mVU0_DIVSQRT(f, opName, mode) \
-	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0), false, false, false)
+	REC_COP2_mVU0_GENERATED_SOFT(f, opName, mode, CHECK_VU_SOFT(0))
 
 #define INTERPRETATE_COP2_FUNC(f) \
 	void recV##f() \

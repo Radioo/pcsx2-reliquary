@@ -10,11 +10,13 @@
 #include "DebugTools/DebugInterface.h"
 #include "DebugTools/SymbolImporter.h"
 #include "Elfheader.h"
+#include "EEMemoryTiming.h"
 #include "FireWire/FireWire.h"
 #include "GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GSDumpReplayer.h"
 #include "GS/GSCapture.h"
+#include "GS/GSVector.h"
 #include "GameDatabase.h"
 #include "GameList.h"
 #include "Host.h"
@@ -163,6 +165,8 @@ static std::unique_ptr<INISettingsInterface> s_input_settings_interface;
 static bool s_log_block_system_console = false;
 static bool s_log_force_file_log = false;
 
+static std::mutex s_hdd_image_operation_mutex;
+static bool s_hdd_image_operation_active = false;
 static std::atomic<VMState> s_state{VMState::Shutdown};
 static bool s_cpu_implementation_changed = false;
 static Threading::ThreadHandle s_vm_thread_handle;
@@ -941,62 +945,12 @@ void VMManager::Internal::UpdateEmuFolders()
 
 void VMManager::RequestDisplaySize(float scale /*= 0.0f*/)
 {
-	int iwidth, iheight;
-	GSgetInternalResolution(&iwidth, &iheight);
-	if (iwidth <= 0 || iheight <= 0)
+	const GSVector2i size = GSGetDisplaySize(scale);
+
+	if (size.x <= 0 || size.y <= 0)
 		return;
 
-	// scale x not y for aspect ratio
-	const float internal_aspect_ratio = static_cast<float>(iwidth) / static_cast<float>(iheight);
-	const float renderer_aspect_ratio = GSGetDisplayAspectRatio();
-	float x_scale;
-	if (renderer_aspect_ratio > 0.0f)
-	{
-		x_scale = renderer_aspect_ratio / internal_aspect_ratio;
-	}
-	else
-	{
-		switch (GSConfig.AspectRatio)
-		{
-			case AspectRatioType::RAuto4_3_3_2:
-				if (EmuConfig.CurrentCustomAspectRatio > 0.f)
-					x_scale = EmuConfig.CurrentCustomAspectRatio / internal_aspect_ratio;
-				else if (GSgetDisplayMode() == GSVideoMode::SDTV_480P)
-					x_scale = (3.0f / 2.0f) / internal_aspect_ratio;
-				else
-					x_scale = (4.0f / 3.0f) / internal_aspect_ratio;
-				break;
-			case AspectRatioType::R4_3:
-				x_scale = (4.0f / 3.0f) / internal_aspect_ratio;
-				break;
-			case AspectRatioType::R16_9:
-				x_scale = (16.0f / 9.0f) / internal_aspect_ratio;
-				break;
-			case AspectRatioType::R10_7:
-				x_scale = (10.0f / 7.0f) / internal_aspect_ratio;
-				break;
-			case AspectRatioType::Stretch:
-			default:
-				x_scale = 1.0f;
-				break;
-		}
-	}
-
-	float width = static_cast<float>(iwidth) * x_scale;
-	float height = static_cast<float>(iheight);
-
-	if (scale != 0.0f)
-	{
-		// unapply the upscaling, then apply the scale
-		scale = (1.0f / GSConfig.UpscaleMultiplier) * scale;
-		width *= scale;
-		height *= scale;
-	}
-
-	iwidth = std::max(static_cast<int>(std::lroundf(width)), 1);
-	iheight = std::max(static_cast<int>(std::lroundf(height)), 1);
-
-	Host::RequestResizeHostDisplay(iwidth, iheight);
+	Host::RequestResizeHostDisplay(size.x, size.y);
 }
 
 std::string VMManager::GetSerialForGameSettings()
@@ -1096,11 +1050,23 @@ void VMManager::UpdateDiscDetails(bool booting)
 		}
 		else if (CDVDsys_GetSourceType() != CDVD_SourceType::NoDisc)
 		{
-			cdvdGetDiscInfo(&s_disc_serial, &s_disc_elf, &s_disc_version, &s_cur_region, &s_disc_crc, nullptr);
-			if (cdvd.DiscType == CDVD_TYPE_DVDV && s_disc_serial.empty())
+			if (cdvd.DiscType == CDVD_TYPE_CDDA)
 			{
-				GameList::GetDVDVideoSerialAndCRCForPath(CDVDsys_GetFile(CDVDsys_GetSourceType()), &s_disc_serial, &s_disc_crc);
+				GameList::GetAudioCDSerialAndCRCForPath(CDVDsys_GetFile(CDVDsys_GetSourceType()), &s_disc_serial, &s_disc_crc);
+				s_disc_elf.clear();
+				s_disc_version.clear();
+				s_cur_region.clear();
 				title = Path::GetFileTitle(CDVDsys_GetFile(CDVDsys_GetSourceType()));
+			}
+			else
+			{
+				cdvdGetDiscInfo(&s_disc_serial, &s_disc_elf, &s_disc_version, &s_cur_region, &s_disc_crc, nullptr);
+
+				if (cdvd.DiscType == CDVD_TYPE_DVDV && s_disc_serial.empty())
+				{
+					GameList::GetDVDVideoSerialAndCRCForPath(CDVDsys_GetFile(CDVDsys_GetSourceType()), &s_disc_serial, &s_disc_crc);
+					title = Path::GetFileTitle(CDVDsys_GetFile(CDVDsys_GetSourceType()));
+				}
 			}
 			serial_is_valid = !s_disc_serial.empty();
 		}
@@ -1491,13 +1457,40 @@ void VMManager::InitializeAsync(
 	done_callback(result, error);
 }
 
+bool VMManager::BeginHddImageOperation(Error* error)
+{
+	std::lock_guard lock(s_hdd_image_operation_mutex);
+	if (s_hdd_image_operation_active || GetState() != VMState::Shutdown)
+	{
+		Error::SetStringView(error, TRANSLATE_SV("VMManager", "Shut down emulation and wait for other HDD operations to finish before modifying an HDD image."));
+		return false;
+	}
+	s_hdd_image_operation_active = true;
+	return true;
+}
+
+void VMManager::EndHddImageOperation()
+{
+	std::lock_guard lock(s_hdd_image_operation_mutex);
+	s_hdd_image_operation_active = false;
+}
+
 VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* error)
 {
 	const Common::Timer init_timer;
-	if (s_state.load(std::memory_order_acquire) != VMState::Shutdown)
 	{
-		Error::SetString(error, TRANSLATE_STR("VMManager", "The virtual machine is already running."));
-		return VMBootResult::StartupFailure;
+		std::lock_guard lock(s_hdd_image_operation_mutex);
+		if (s_state.load(std::memory_order_acquire) != VMState::Shutdown)
+		{
+			Error::SetString(error, TRANSLATE_STR("VMManager", "The virtual machine is already running."));
+			return VMBootResult::StartupFailure;
+		}
+		if (s_hdd_image_operation_active)
+		{
+			Error::SetStringView(error, TRANSLATE_SV("VMManager", "Wait for the HDD image operation to finish before starting emulation."));
+			return VMBootResult::StartupFailure;
+		}
+		s_state.store(VMState::Initializing, std::memory_order_release);
 	}
 
 	ApplyPythonBootParameters(boot_params);
@@ -1507,7 +1500,6 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	// (or make it thread-local, but that seems silly.)
 	Host::CancelGameListRefresh();
 
-	s_state.store(VMState::Initializing, std::memory_order_release);
 	s_vm_thread_handle = Threading::ThreadHandle::GetForCallingThread();
 	Host::OnVMStarting();
 	VMManager::Internal::ResetVMHotkeyState();
@@ -1672,6 +1664,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	s_fast_boot_requested =
 		(boot_params.fast_boot.value_or(static_cast<bool>(EmuConfig.EnableFastBoot)) || !s_elf_override.empty()) &&
 		(CDVDsys_GetSourceType() != CDVD_SourceType::NoDisc || !s_elf_override.empty()) &&
+		(cdvd.DiscType != CDVD_TYPE_CDDA || !s_elf_override.empty()) &&
 		!GSDumpReplayer::IsReplayingDump();
 
 	if (!s_elf_override.empty())
@@ -2095,6 +2088,8 @@ std::string VMManager::GetCurrentSaveStateFileName(s32 slot, bool backup)
 	u32 crc = s_disc_crc;
 	if (serial.empty() && cdvd.DiscType == CDVD_TYPE_DVDV && CDVDsys_GetSourceType() != CDVD_SourceType::NoDisc)
 		GameList::GetDVDVideoSerialAndCRCForPath(CDVDsys_GetFile(CDVDsys_GetSourceType()), &serial, &crc);
+	else if (serial.empty() && cdvd.DiscType == CDVD_TYPE_CDDA && CDVDsys_GetSourceType() != CDVD_SourceType::NoDisc)
+		GameList::GetAudioCDSerialAndCRCForPath(CDVDsys_GetFile(CDVDsys_GetSourceType()), &serial, &crc);
 
 	return GetSaveStateFileName(serial.c_str(), crc, slot, backup);
 }
@@ -2651,7 +2646,7 @@ bool VMManager::IsSaveStateFileName(const std::string_view path)
 
 bool VMManager::IsDiscFileName(const std::string_view path)
 {
-	static const char* extensions[] = {".iso", ".bin", ".img", ".mdf", ".gz", ".cso", ".zso", ".chd", ".py1", ".py2"};
+	static const char* extensions[] = {".iso", ".bin", ".cue", ".img", ".mdf", ".gz", ".cso", ".zso", ".chd", ".py1", ".py2"};
 
 	for (const char* test_extension : extensions)
 	{
@@ -3168,6 +3163,8 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	}
 
 	Console.WriteLn("Updating CPU configuration...");
+	if (EmuConfig.Cpu.EnableEEInstructionCacheTiming != old_config.Cpu.EnableEEInstructionCacheTiming)
+		EEMemoryTiming::ResetInstructionCache();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	if (EmuConfig.Cpu.VU0SoftFloat != old_config.Cpu.VU0SoftFloat)
 		VU0.accflag = 0;

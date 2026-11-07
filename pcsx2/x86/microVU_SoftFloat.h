@@ -54,11 +54,6 @@ struct alignas(4) VuUpperFmacSoftDescriptor
 		return IsKind(VuUpperFmacSoftKind::Add) || IsKind(VuUpperFmacSoftKind::Sub);
 	}
 
-	constexpr bool IsAddSubMul() const
-	{
-		return IsAddSub() || IsKind(VuUpperFmacSoftKind::Mul);
-	}
-
 	constexpr bool ReadsQ() const
 	{
 		return source == VuUpperFmacSoftOperandSource::Q;
@@ -79,36 +74,6 @@ struct alignas(4) VuUpperFmacSoftDescriptor
 		return static_cast<u8>(source);
 	}
 
-	constexpr bool PromotesNonSticky() const
-	{
-		return (IsAddSub() && ReadsQ()) ||
-		       (IsAddSubMul() && source == VuUpperFmacSoftOperandSource::Ft);
-	}
-
-	constexpr bool UsesRingStatusSource(u32 vu_index) const
-	{
-		return (IsAddSub() && ReadsQ()) ||
-		       (IsAddSubMul() && source == VuUpperFmacSoftOperandSource::Ft &&
-				   ((vu_index == 0 && destination == VuUpperFmacSoftDestination::Fd) ||
-					   (vu_index == 1 && destination == VuUpperFmacSoftDestination::Acc)));
-	}
-
-	constexpr bool HasNativeProductUnderflowFd() const
-	{
-		return IsMultiplyAdd() && source == VuUpperFmacSoftOperandSource::Ft &&
-		       destination == VuUpperFmacSoftDestination::Fd;
-	}
-
-	constexpr bool IsImmediateFdAddSubMul() const
-	{
-		return IsAddSubMul() && source == VuUpperFmacSoftOperandSource::I &&
-		       destination == VuUpperFmacSoftDestination::Fd;
-	}
-
-	constexpr bool IsBroadcastFdAddSubMul() const
-	{
-		return IsAddSubMul() && UsesBroadcastOperand() && destination == VuUpperFmacSoftDestination::Fd;
-	}
 };
 
 static_assert(sizeof(VuUpperFmacSoftDescriptor) == 4);
