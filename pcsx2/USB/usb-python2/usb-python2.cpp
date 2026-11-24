@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <optional>
 
 namespace usb_python2
 {
@@ -275,8 +276,8 @@ namespace usb_python2
 
 		std::vector<uint8_t> buf;
 
-		u8 bootloaderPcbIdPrefix = Python2Dongle::BOOTLOADER_PCB_ID_PREFIX;
-		bool isBootloaderPcbIdPrefixPatched = false;
+		std::optional<u8> pcbIdPrefix;
+		bool isPcbIdApplied = false;
 
 		std::bitset<128> buttonState;
 		
@@ -471,7 +472,7 @@ namespace usb_python2
 		const Python2Dongle::Bytes white = Python2Dongle::BuildWhite(pcb_id->serial);
 		std::copy(white.begin(), white.end(), std::begin(s->f.dongleSlotPayload[1]));
 		s->f.isDongleSlotLoaded[1] = true;
-		s->bootloaderPcbIdPrefix = pcb_id->prefix;
+		s->pcbIdPrefix = pcb_id->prefix;
 		Console.WriteLn("P2IO: white dongle signed for e-amusement PCB ID %s",
 			Python2Dongle::FormatPcbId(pcb_id->prefix, white).c_str());
 	}
@@ -544,7 +545,7 @@ namespace usb_python2
 			}
 		}
 
-		s->bootloaderPcbIdPrefix = Python2Dongle::BOOTLOADER_PCB_ID_PREFIX;
+		s->pcbIdPrefix.reset();
 		const std::string pcb_id = si->GetStringValue("Python2/Game", "PcbId", "");
 		if (!pcb_id.empty())
 			apply_pcb_id(s, pcb_id);
@@ -556,7 +557,7 @@ namespace usb_python2
 
 		// Initialize all variables to try and keep a consistent state
 		s->buf.clear();
-		s->isBootloaderPcbIdPrefixPatched = false;
+		s->isPcbIdApplied = false;
 		s->ddrHardware.ResetLights();
 
 		s->f.gameType = s->f.prevGameType = -1;
@@ -725,8 +726,8 @@ namespace usb_python2
 					if (subCmd != 2)
 						s->f.requestedDongle = subCmd;
 
-					if (s->bootloaderPcbIdPrefix != Python2Dongle::BOOTLOADER_PCB_ID_PREFIX && !s->isBootloaderPcbIdPrefixPatched)
-						s->isBootloaderPcbIdPrefixPatched = Python2BootPatch::ApplyPcbIdPrefix(s->bootloaderPcbIdPrefix);
+					if (s->pcbIdPrefix.has_value() && !s->isPcbIdApplied)
+						s->isPcbIdApplied = Python2BootPatch::ApplyPcbId(*s->pcbIdPrefix);
 
 					if (s->f.requestedDongle >= 0)
 					{

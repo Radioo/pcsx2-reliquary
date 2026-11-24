@@ -73,6 +73,10 @@ With `ServerUrl` set, Python 2 networking is switched on for that game: the Sock
 
 On a real cabinet this ID comes from the white dongle: the bootloader builds `01 40` followed by the dongle serial bytes 0, 6 to 1 and 7, and reports it as `sysid`. The emulator therefore signs a white dongle with the last 16 digits of `PcbId`, and patches the bootloader's constant `40` to the second byte of `PcbId` when the game first reads its dongles (the patch is found by an instruction pattern, not a fixed address, and is logged as `P2IO: bootloader PCB ID prefix at ... set to ..`). The bootloader uses the same constant for the black dongle's `softid` (sent as `hardid`), so that ID gets the same second byte. The black dongle itself, the game's license, still comes from `DongleBlackPath`.
 
+The patch goes into the copy of the bootloader that is actually called. Some installs also keep the bootloader's file image in memory (DDR SuperNOVA 2 does), and that copy is left alone.
+
+Community "Midnight Special" installs run a cheat code engine that writes a fixed PCB ID over the one the bootloader builds from the white dongle (`99999992367354060312` on DDR SuperNOVA 2). With `PcbId` set, the emulator disables every code in that engine's list that writes into the bootloader's PCB ID, logged as `P2IO: code ... writes over the PCB ID at ..., disabled`. The engine's other codes, such as the game code that stands in for a black dongle, keep working.
+
 Both can also be set per game under **Game Properties > Python 2 > Network Settings**.
 
 Servers often hand out service URLs on `127.0.0.1` (CARDINAL-GATE does in debug mode). The PS2 network stack (SCE INET) keeps any `127.x` traffic to itself, so with `ServerUrl` set the emulator disables that one loopback check in the loaded INET module the first time the game sends a packet (logged as `DEV9: INET loopback check at ... disabled`). Such connections then go out like any other and are redirected to the server.

@@ -5,11 +5,15 @@
 
 #include "common/Pcsx2Defs.h"
 
+#include <optional>
 #include <span>
 #include <vector>
 
 namespace Python2BootPatch
 {
 	std::vector<u32> FindPcbIdPrefixLoads(std::span<const u32> code, u8 prefix);
-	bool ApplyPcbIdPrefix(u8 prefix);
+	std::vector<u32> FindCalledPcbIdPrefixLoads(std::span<const u32> ram, u8 prefix);
+	std::optional<u32> FindPcbIdBufferAddress(std::span<const u32> ram, u32 prefix_load);
+	std::vector<u32> FindCodeEngineWritesTo(std::span<const u32> ram, u32 address, u32 size);
+	bool ApplyPcbId(u8 prefix);
 }
